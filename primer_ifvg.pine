@@ -33,6 +33,8 @@
 //    termina ahí. Solo los de hoy que siguen vivos, más la zona operada (que
 //    además se extiende punteada mientras siga viva, para la reentrada). Si un
 //    IFVG de TF mayor solapa uno menor en la misma ventana, se ve el mayor.
+//    Con el input "Dejar de mostrar los IFVG después de N minutos" (⑨) los
+//    IFVG se ocultan N minutos después de invertirse (la zona operada no).
 //  · En formación: si la vela ABIERTA de una TF cerrara al precio actual a
 //    través de un FVG vivo (→ IFVG) o de un nivel CISD armado (→ CISD), se
 //    dibuja punteado y sin relleno, con la hora a la que cierra esa vela
@@ -315,6 +317,7 @@ transpHTF = input.int(95, "Transparencia", minval=50, maxval=99, group=g8, displ
 
 g9 = "⑨ Visual"
 mostrarMuertos = input.bool(false, "Dejar los IFVG muertos del día (gris)", group=g9, display=display.none)
+ifvgMaxMin = input.int(0, "Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)", minval=0, group=g9, tooltip="Cuenta desde el cierre de la vela que invirtió el FVG. Solo afecta al dibujo: no cambia la lógica de trading, y la zona operada sigue mostrándose mientras dure el trade o la reentrada.", display=display.none)
 dedupMin  = input.int(10, "Deduplicar IFVG/CISD entre TFs: ventana (minutos) (operador)", minval=1, group=g9, tooltip=OP, display=display.none)
 dedupPts  = input.float(2.0, "Deduplicar CISD: niveles a menos de (puntos) (operador)", step=0.25, group=g9, tooltip=OP, display=display.none)
 cIfvgBull = input.color(#26a69a, "IFVG alcista", inline="c1", group=g9, display=display.none)
@@ -1249,8 +1252,9 @@ f_label(int x, float y, string txt, string style, color bg, color txtc, string s
     label lb = label.new(x, y, txt, xloc=xloc.bar_time, style=style, color=bg, textcolor=txtc, size=sz, tooltip=tip)
     array.push(dLabels, lb)
 
-// IFVG confirmados a dibujar: vivos de hoy + zona operada (+ muertos del día si se pide)
-f_candIFVG() =>
+// IFVG confirmados a dibujar: vivos de hoy + zona operada (+ muertos del día si se pide).
+// Con ifvgMaxMin > 0 se ocultan pasados N minutos desde la vela que los invirtió (la zona operada no).
+f_candIFVG(int tNow) =>
     array<Fvg> cand = array.new<Fvg>()
     for n = 1 to 5
         if f_tfOn(n)
@@ -1258,7 +1262,8 @@ f_candIFVG() =>
             for f in s.fvgs
                 if f.state == 1 or f.state == 2
                     bool hoy = f.tInv >= D.dayStart
-                    bool ok = f.usado or (hoy and (f.state == 1 or (f.state == 2 and mostrarMuertos)))
+                    bool vigente = ifvgMaxMin == 0 or tNow - f.tcInv <= ifvgMaxMin * 60000
+                    bool ok = f.usado or (hoy and vigente and (f.state == 1 or (f.state == 2 and mostrarMuertos)))
                     if ok
                         array.push(cand, f)
     cand
@@ -1285,11 +1290,11 @@ f_tFin(int n, int tUlt) => tUlt + (n - f_nyMin(tUlt) % n) * 60000
 // pero con el cierre en curso. Solo lee el estado; se recalcula en cada tick y desaparece si el
 // precio se devuelve. Deduplicación igual que los confirmados: si una TF mayor (confirmada o en
 // formación) solapa en la misma ventana, se ve la mayor.
-f_calcFormacion(float cLive, int tUlt) =>
+f_calcFormacion(float cLive, int tUlt, int tNow) =>
     array.clear(formIfvg)
     array.clear(formCisd)
     if not na(tUlt) and not na(cLive)
-        array<Fvg>    candI  = f_candIFVG()
+        array<Fvg>    candI  = f_candIFVG(tNow)
         array<CisdEv> candC  = f_candCISD()
         array<Fvg>    todosI = array.new<Fvg>()
         array<CisdEv> todosC = array.new<CisdEv>()
@@ -1333,7 +1338,7 @@ f_calcFormacion(float cLive, int tUlt) =>
 // IFVG: vivos de hoy + zona operada (sólido) y en formación (punteado, sin relleno).
 // Si una TF mayor solapa, se ve la mayor.
 f_dibIFVG(int tNow) =>
-    array<Fvg> cand = f_candIFVG()
+    array<Fvg> cand = f_candIFVG(tNow)
     for f in cand
         bool tapado = false
         if not f.usado
@@ -1513,7 +1518,7 @@ f_dibRechazos() =>
 if barstate.islast and tfOk
     f_borrarDibujos()
     // vista previa de la vela abierta (se calcula siempre: el panel la muestra aunque el dibujo esté apagado)
-    f_calcFormacion(close, tUlt1m)
+    f_calcFormacion(close, tUlt1m, time_close)
     f_dibHTF(close, time_close)
     f_dibIFVG(time_close)
     f_dibCISD()
