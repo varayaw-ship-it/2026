@@ -16,10 +16,12 @@
 //    vela de 1m cerrada: no repinta. La única excepción es la vista previa
 //    "en formación" (punteado): por definición sigue al precio tick a tick
 //    hasta que cierra la vela, y desaparece si el precio se devuelve.
-//  · Un FVG solo puede invertirse dentro de las N velas (de su propia TF) que
-//    siguen a la vela que lo completa; después caduca y ya no genera IFVG ni
-//    vista previa (input "Máx. velas" en ③; 0 = sin límite). Así un FVG de
-//    las 00:00 no aparece invertido a las 09:00.
+//  · Un FVG solo puede invertirse dentro de un plazo desde la vela que lo
+//    completa; después caduca y ya no genera IFVG ni vista previa. El plazo
+//    se mide en velas de su propia TF (default 60: 1 h en 1m, 5 h en 5m) o,
+//    con el interruptor "Límite uniforme en minutos", en minutos de reloj
+//    iguales para todas las TFs (default 60). 0 = sin límite. Así un FVG
+//    de las 00:00 no aparece invertido a las 09:00.
 //  · Cada número que las fuentes no definen es un input marcado "(operador)".
 //  · Ventana de operación por hora y minuto (default 09:30–10:10 NY); puede
 //    cruzar medianoche. El cupo de trades es POR VENTANA: se reinicia cada
@@ -83,6 +85,7 @@ type Fvg
     float bot
     float ce
     int   tBirth
+    int   tcBirth
     int   seqBirth
     int   state = 0   // 0 vivo · 1 invertido (IFVG) · 2 muerto · 3 caducado sin invertirse
     int   tInv
@@ -260,7 +263,9 @@ tf4 = input.bool(true, "4m", inline="tfs", group=g3, display=display.none)
 tf5 = input.bool(true, "5m", inline="tfs", group=g3, display=display.none)
 fvgPostOpen  = input.bool(false, "Exigir que el FVG original también sea posterior a las 9:30", group=g3, display=display.none)
 fvgMinTicks  = input.int(0, "Tamaño mínimo del FVG en ticks (0 = sin filtro) (operador)", minval=0, group=g3, tooltip=OP, display=display.none)
-maxVelasInv  = input.int(60, "Máx. velas (de su TF) para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Se cuenta en velas de la TF del FVG, desde la vela que lo completa hasta la que lo invierte: 60 velas = 1 h en 1m, 2 h en 2m, 3 h en 3m, 4 h en 4m, 5 h en 5m.", display=display.none)
+maxVelasInv  = input.int(60, "Máx. velas (de su TF) para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Se cuenta en velas de la TF del FVG, desde la vela que lo completa hasta la que lo invierte: 60 velas = 1 h en 1m, 2 h en 2m, 3 h en 3m, 4 h en 4m, 5 h en 5m. No se usa si está activado el límite uniforme en minutos.", display=display.none)
+limInvMin    = input.bool(false, "Límite uniforme en minutos para todas las TFs (en vez de velas de su TF)", group=g3, display=display.none)
+maxMinInv    = input.int(60, "Máx. minutos para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Solo se usa con el límite uniforme activado. Minutos de reloj desde el cierre de la vela que completa el FVG hasta el cierre de la que lo invierte, igual en 1m que en 5m.", display=display.none)
 maxVivos1m   = input.int(3, "'Sin claridad': FVGs vivos de 1m del mismo lado que anulan la señal de 1m (operador)", minval=1, group=g3, tooltip=OP, display=display.none)
 esperarOtro  = input.bool(true, "Si el primer IFVG a favor no cumple, seguir esperando otro", group=g3, display=display.none)
 segundoNuevo = input.bool(true, "El 2º trade puede ser un IFVG nuevo (además de la reentrada)", group=g3, display=display.none)
@@ -689,13 +694,15 @@ method procesar(TFState s) =>
             float top = dirF == 1 ? c.l : c1.l
             float bot = dirF == 1 ? c1.h : c.h
             if (top - bot) >= fvgMinTicks * syminfo.mintick and c1.t >= D.dayStart
-                array.push(s.fvgs, Fvg.new(tf=s.n, dir=dirF, top=top, bot=bot, ce=(top + bot) / 2, tBirth=c1.t, seqBirth=c.seq))
-        // 6. estado de los FVG con la vela c: caducidad (más de N velas sin invertirse) / inversión (cierre a
-        //    través de TODO el gap) / muerte (cierre a través del CE en contra)
+                array.push(s.fvgs, Fvg.new(tf=s.n, dir=dirF, top=top, bot=bot, ce=(top + bot) / 2, tBirth=c1.t, tcBirth=c.tc, seqBirth=c.seq))
+        // 6. estado de los FVG con la vela c: caducidad (plazo vencido sin invertirse, en velas de su TF o en
+        //    minutos uniformes) / inversión (cierre a través de TODO el gap) / muerte (cierre a través del CE en contra)
         for f in s.fvgs
             if f.seqBirth < c.seq
-                if f.state == 0 and maxVelasInv > 0 and c.seq - f.seqBirth > maxVelasInv
-                    f.state := 3
+                if f.state == 0
+                    bool caduca = limInvMin ? (maxMinInv > 0 and c.tc - f.tcBirth > maxMinInv * 60000) : (maxVelasInv > 0 and c.seq - f.seqBirth > maxVelasInv)
+                    if caduca
+                        f.state := 3
                 if f.state == 0
                     bool inv = f.dir == 1 ? c.c < f.bot : c.c > f.top
                     if inv
@@ -1291,10 +1298,11 @@ f_calcFormacion(float cLive, int tUlt) =>
                 TFState s = f_tfState(n)
                 int tFin = f_tFin(n, tUlt)
                 for f in s.fvgs
-                    // la vela abierta será la seqN + 1: mismo límite de velas que la inversión real
-                    if f.state == 0 and (maxVelasInv == 0 or s.seqN + 1 - f.seqBirth <= maxVelasInv)
+                    if f.state == 0
+                        // la vela abierta será la seqN + 1 y cierra en tFin: mismo plazo que la inversión real
+                        bool dentro = limInvMin ? (maxMinInv == 0 or tFin - f.tcBirth <= maxMinInv * 60000) : (maxVelasInv == 0 or s.seqN + 1 - f.seqBirth <= maxVelasInv)
                         bool inv = f.dir == 1 ? cLive < f.bot : cLive > f.top
-                        if inv and (not formBias or -f.dir == bias)
+                        if dentro and inv and (not formBias or -f.dir == bias)
                             array.push(todosI, f)
                 if s.cBear.armado and cLive < s.cBear.lvl and (not formBias or bias == -1)
                     array.push(todosC, CisdEv.new(t=tFin, dir=-1, tf=n, lvl=s.cBear.lvl, tStart=s.cBear.tStart))
