@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.7 (2026-10-09)
+//  PRIMER IFVG DE LA SESIÓN · v1.8 (2026-10-09)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -54,7 +54,9 @@
 //  · Colores: IFVG, CISD y trades comparten paleta (señal); los FVG de
 //    15m/1h/4h tienen la suya (contexto). Todos configurables.
 //  · CISD: el último por TF y dirección de la sesión; misma deduplicación.
-//  · FVG 15m/1h/4h: los N más cercanos al precio por arriba y por abajo.
+//  · FVG 15m/1h/4h: los N más cercanos al precio por arriba y por abajo,
+//    con un contorno (negro por defecto) más oscuro cuanto mayor la TF:
+//    15m muy claro, 1h medio, 4h oscuro.
 //  · CE (consequent encroachment): el 50% del gap, de mecha a mecha. Se marca
 //    con una línea a rayas dentro de cada IFVG (también la zona operada y la
 //    vista previa) y de cada FVG de 15m/1h/4h. Es el mismo nivel cuyo cierre
@@ -63,11 +65,10 @@
 //    Swings 5m apagados por defecto. Los barridos se borran.
 //  · Etiquetas con fondo casi opaco del color del gráfico (legibles en tema
 //    claro y oscuro) y tamaño configurable; el detalle va en el tooltip.
-//  · Panel compacto por defecto; horas en la zona horaria que elijas. Muestra
-//    el setup que se está formando: checklist (bias, ventana, barrido), lo que
-//    hay en formación (IFVG/CISD y a qué hora cierra su vela) y el grado que
-//    tendría el trade si el IFVG apareciera ahora, con cada confluencia
-//    marcada ✓/✗.
+//  · Panel mínimo por defecto: confluencias ✓/✗, el grado que tendría el
+//    trade si el IFVG apareciera ahora (o por qué no se opera) y el trade.
+//    "Compacto" y "Completo" agregan bias, ventana, setup, en formación, día,
+//    último barrido/CISD/rechazo, riesgo y leyenda.
 //
 //  LÍMITES CONOCIDOS
 //  · Order block y breaker quedan para la v2.
@@ -76,7 +77,7 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.7", shorttitle="IFVG v1.7", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.8", shorttitle="IFVG v1.8", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
 
@@ -331,6 +332,10 @@ show60    = input.bool(true, "1h", inline="htf", group=g8, display=display.none)
 show240   = input.bool(true, "4h", inline="htf", group=g8, display=display.none)
 nCercanos = input.int(2, "Mostrar los N más cercanos al precio por arriba y por abajo", minval=0, maxval=6, group=g8, display=display.none)
 transpHTF = input.int(95, "Transparencia", minval=50, maxval=99, group=g8, display=display.none)
+cBordeHtf = input.color(#000000, "Contorno", inline="bhtf", group=g8, tooltip="Color del contorno de las cajas. La opacidad va por temporalidad (0 = sin contorno, 100 = sólido): más clara en 15m, más oscura en 4h.", display=display.none)
+opB15     = input.int(20, "opacidad 15m", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
+opB60     = input.int(45, "1h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
+opB240    = input.int(75, "4h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
 
 g9 = "⑨ Visual"
 mostrarMuertos = input.bool(false, "Dejar los IFVG muertos del día (gris)", group=g9, display=display.none)
@@ -370,7 +375,7 @@ gAp   = input.int(6, "A+ desde", group=g11, display=display.none)
 
 g12 = "⑫ Panel · alertas"
 showPanel     = input.bool(true, "Mostrar panel", group=g12, display=display.none)
-panelCompacto = input.bool(true, "Panel compacto", group=g12, display=display.none)
+panelModo     = input.string("Mínimo", "Contenido del panel", options=["Mínimo", "Compacto", "Completo"], group=g12, tooltip="Mínimo: confluencias, grado y trade. Compacto: además bias, ventana, setup, en formación y día. Completo: todo, con último barrido, CISD y rechazo, riesgo y leyenda.", display=display.none)
 panelTexto    = input.string("Normal", "Tamaño de texto del panel", options=["Pequeño", "Normal"], group=g12, display=display.none)
 panelPos      = input.string("Arriba derecha", "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g12, display=display.none)
 alertasJSON   = input.bool(false, "Emitir eventos JSON con alert() (programa externo, v2)", group=g12, display=display.none)
@@ -1503,7 +1508,9 @@ f_dibHTF(float c, int tNow) =>
     for f in vivos
         if f.sel
             color col = f.dir == 1 ? cHtfBull : cHtfBear
-            f_box(f.tBirth, f.top, tNow, f.bot, color.new(col, transpHTF), color.new(col, transpHTF), "FVG " + f.tf, color.new(col, math.max(transpHTF - 35, 0)), true, text.align_right, ceHtf ? (f.dir == 1 ? text.align_bottom : text.align_top) : text.align_center, line.style_solid)
+            // contorno: más oscuro cuanto mayor la TF (opacidad 0–100 → transparencia 100–0)
+            int opB = f.tf == "15m" ? opB15 : f.tf == "1h" ? opB60 : opB240
+            f_box(f.tBirth, f.top, tNow, f.bot, color.new(cBordeHtf, 100 - opB), color.new(col, transpHTF), "FVG " + f.tf, color.new(col, math.max(transpHTF - 35, 0)), true, text.align_right, ceHtf ? (f.dir == 1 ? text.align_bottom : text.align_top) : text.align_center, line.style_solid)
             // CE (50% del gap), extendido igual que la caja; con CE el rótulo va al borde para no quedar tachado
             if ceHtf
                 float ceH = (f.top + f.bot) / 2
@@ -1656,12 +1663,13 @@ f_gradoAhora(int dir, int tc, float c) =>
 f_txtBarrido(int d, bool hay, string txt) => hay ? txt + " ✓" : "sin barrido " + (d == 1 ? "SSL" : "BSL") + " en " + str.tostring(minBarrido) + " min ✗"
 
 if showPanel and barstate.islast
-    var table pnl = table.new(f_pos(panelPos), 2, panelCompacto ? 9 : 15, bgcolor=color.new(cFondo, 10), border_width=1, border_color=color.new(cTexto, 85))
+    var table pnl = table.new(f_pos(panelPos), 2, panelModo == "Mínimo" ? 3 : panelModo == "Compacto" ? 9 : 15, bgcolor=color.new(cFondo, 10), border_width=1, border_color=color.new(cTexto, 85))
     string tfTxt = timeframe.period + (timeframe.isminutes ? "m" : "")
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
-    table.cell(pnl, 0, 0, "IFVG v1.7", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
-    table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+    if panelModo != "Mínimo"
+        table.cell(pnl, 0, 0, "IFVG v1.8", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+        table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
     string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
     string sLec = "vela previa " + f_sym(lec1) + " · desplaz. " + f_sym(lec2) + " · 4H " + f_sym(lec3) + (alineado ? " · alineados" : "") + (mechaGrande ? " · mecha grande" : "")
@@ -1714,6 +1722,9 @@ if showPanel and barstate.islast
         else
             sConf := f_sym(dirSel) + " " + detA
             sGrado := "Si entra ahora: ↑ " + f_grado(ptsU) + " (" + str.tostring(ptsU) + "/" + str.tostring(maxPts) + ") · ↓ " + f_grado(ptsD) + " (" + str.tostring(ptsD) + "/" + str.tostring(maxPts) + ")" + (wTF > 0 ? " · con IFVG ≥3m o en FVG HTF: ↑ " + f_grado(ptsU + wTF) + " · ↓ " + f_grado(ptsD + wTF) : "")
+    bool gradoEsMotivo = panelModo == "Mínimo" and not act and (not puedeOperar or D.cerrado or D.tradesWin >= maxTrades)
+    if gradoEsMotivo
+        sGrado := sSet
     string gradoLetra = f_grado(ptsA)
     if act
         gradoLetra := D.activo.grado
@@ -1740,9 +1751,13 @@ if showPanel and barstate.islast
     string sRk = str.tostring(rp, "#.#") + "% de " + str.tostring(cuenta, "#") + " USD = " + str.tostring(cuenta * rp / 100, "#") + " USD por trade"
     color cBiasTxt = bias == 1 ? cBull : bias == -1 ? cBear : color.new(cTexto, 35)
     color cVenTxt = ventanaAbierta ? cAmar : color.new(cTexto, 35)
-    color cGr = not puedeOperar and not act ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
+    color cGr = gradoEsMotivo or (not puedeOperar and not act) ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
     color cForm = sForm == "—" ? color.new(cTexto, 35) : cAmar
-    if panelCompacto
+    if panelModo == "Mínimo"
+        f_fila(pnl, 0, "Confluencias", sConf, cTexto)
+        f_fila(pnl, 1, "Grado", sGrado, cGr)
+        f_fila(pnl, 2, "Trade", sTr, cTexto)
+    else if panelModo == "Compacto"
         f_fila(pnl, 1, "Bias", sBias + " · " + sLec, cBiasTxt)
         f_fila(pnl, 2, "Ventana", sVen, cVenTxt)
         f_fila(pnl, 3, "Setup", sSet, cTexto)
@@ -1765,4 +1780,4 @@ if showPanel and barstate.islast
         f_fila(pnl, 11, "Último rechazo", D.ultimoMotivo == "" ? "—" : D.ultimoMotivo, color.new(cTexto, 35))
         f_fila(pnl, 12, "Día", sDia, cTexto)
         f_fila(pnl, 13, "Riesgo", sRk, color.new(cTexto, 35))
-        f_fila(pnl, 14, "Leyenda", "IFVG/CISD/trades: paleta de señal · punteado sin relleno = en formación (vela abierta) · línea interior = CE 50% · FVG 15m/1h/4h: paleta de contexto · PDH/PDL ámbar · sesiones azul · swings gris · EQ violeta", color.new(cTexto, 50))
+        f_fila(pnl, 14, "Leyenda", "IFVG/CISD/trades: paleta de señal · punteado sin relleno = en formación (vela abierta) · línea interior = CE 50% · FVG 15m/1h/4h: paleta de contexto, contorno más oscuro cuanto mayor la TF · PDH/PDL ámbar · sesiones azul · swings gris · EQ violeta", color.new(cTexto, 50))
