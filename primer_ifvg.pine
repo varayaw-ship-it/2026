@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.5 (2026-10-08)
+//  PRIMER IFVG DE LA SESIÓN · v1.6 (2026-10-09)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -27,6 +27,10 @@
 //    cruzar medianoche. El cupo de trades es POR VENTANA: se reinicia cada
 //    vez que la ventana abre, además del reinicio diario a las 18:00 NY.
 //  · Los inputs no se vuelcan en el título del indicador (display.none).
+//  · "El bias filtra los trades" (②): encendido, solo se opera a favor del
+//    bias y sin bias no se opera. Apagado, se toma el primer IFVG que cumpla
+//    en cualquier dirección, también sin bias ("Sin operar" sigue
+//    bloqueando); esos trades se marcan "contra bias" o "sin bias".
 //
 //  VISUAL (todo se redibuja en la última vela; nada se acumula)
 //  · IFVG: la caja va desde el FVG original hasta la vela que lo invierte y
@@ -41,6 +45,10 @@
 //    (⏳09:35). Al confirmarse pasa al trazo normal; si no, desaparece.
 //    Por defecto muestra cualquier dirección; hay un input para limitarla al
 //    bias. Misma deduplicación entre TFs que los confirmados.
+//  · Trades (⑩): elige cuáles se dibujan (todos los últimos N, solo los de
+//    hoy, solo el último o solo el activo); la zona operada sigue la misma
+//    regla. Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
+//    sin barrido, RR…) están ocultas por defecto y se activan ahí mismo.
 //  · Colores: IFVG, CISD y trades comparten paleta (señal); los FVG de
 //    15m/1h/4h tienen la suya (contexto). Todos configurables.
 //  · CISD: el último por TF y dirección de la sesión; misma deduplicación.
@@ -62,7 +70,7 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.5", shorttitle="IFVG v1.5", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.6", shorttitle="IFVG v1.6", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
 
@@ -96,6 +104,7 @@ type Fvg
     float swingInv
     bool  usado = false
     bool  reentrada = false
+    int   tUso        // entrada del último trade que operó esta zona (para mostrarla junto con su trade)
 
 type Pivot
     int   dir
@@ -193,6 +202,7 @@ type Trade
     float  ctos
     bool   esReentrada = false
     string salida = ""
+    int    biasEnt = 0   // bias en el momento de la entrada (para marcar trades contra bias / sin bias)
 
 type Rechazo
     int    t
@@ -251,6 +261,7 @@ tzPanel    = input.string("America/Santiago", "Zona horaria para mostrar horas",
 
 g2 = "② Bias diario"
 biasMode  = input.string("Auto", "Bias", options=["Auto", "Alcista", "Bajista", "Sin operar"], group=g2, display=display.none)
+biasFiltra = input.bool(true, "El bias filtra los trades (apagado: se opera en ambas direcciones)", group=g2, tooltip="Encendido: solo IFVG a favor del bias, y sin bias no se opera. Apagado: se toma el primer IFVG que cumpla en cualquier dirección, también sin bias; 'Sin operar' sigue bloqueando. El punto de 1D/4H solo suma si las lecturas van en la dirección del trade. Los trades contra el bias o sin bias quedan marcados en la etiqueta.", display=display.none)
 pctCierre = input.float(70, "Lectura 1: cierre 'cerca del extremo' (% del rango) (operador)", minval=50, maxval=100, group=g2, tooltip=OP, display=display.none)
 usaDespl  = input.bool(true, "Lectura 2: desplazamiento sobre el máximo/mínimo del día anterior", group=g2, display=display.none)
 usa4H     = input.bool(true, "Lectura 3: order flow 4H (dos últimos pivotes)", group=g2, display=display.none)
@@ -327,30 +338,33 @@ cHtfBear  = input.color(#8d6e63, "FVG 15m/1h/4h bajista", inline="c2", group=g9,
 extZona   = input.bool(true, "Extender la zona operada mientras siga viva (punteado)", group=g9, display=display.none)
 showForm  = input.bool(true, "Vista previa 'en formación': IFVG/CISD que confirmaría la vela abierta (punteado)", group=g9, tooltip="Si la vela abierta de una TF cerrara al precio actual a través de un FVG vivo o de un nivel CISD armado, se dibuja punteado con la hora de cierre de esa vela. Desaparece si el precio se devuelve.", display=display.none)
 formBias  = input.bool(false, "Vista previa solo a favor del bias", group=g9, tooltip="Apagado: cualquier IFVG/CISD en formación, en ambas direcciones. Encendido: solo los de la dirección del bias (sin bias no muestra nada).", display=display.none)
-showRechazos = input.bool(true, "Marcar IFVG a favor rechazados (motivo)", group=g9, display=display.none)
-maxRechDib   = input.int(3, "Rechazos a marcar (los últimos N del día)", minval=0, maxval=20, group=g9, display=display.none)
 tamEtiq      = input.string("Normal", "Tamaño de las etiquetas del gráfico", options=["Pequeño", "Normal", "Grande"], group=g9, display=display.none)
 showSweepLbl = input.bool(true, "Marcar barridos de niveles HTF", group=g9, display=display.none)
-maxTradesDib = input.int(10, "Trades a dibujar (los últimos N)", minval=1, maxval=40, group=g9, display=display.none)
 
-g10 = "⑩ Grado (pesos) (operador)"
-wSMT  = input.int(1, "SMT en el barrido", group=g10, display=display.none)
-wSMTe = input.int(1, "SMT con estructura (CISD posterior en la misma dirección)", group=g10, display=display.none)
-wCISD = input.int(1, "CISD a favor en los últimos N minutos", group=g10, display=display.none)
-wHTF  = input.int(1, "Barrido de nivel HTF (PDH/PDL, sesión, EQ, swing 15m)", group=g10, display=display.none)
-wTF   = input.int(1, "IFVG en ≥3m o dentro de FVG vivo de 15m/1h/4h", group=g10, display=display.none)
-wAlin = input.int(1, "1D y 4H alineados", group=g10, display=display.none)
-wPD   = input.int(1, "Discount (largo) / premium (corto) del rango overnight", group=g10, display=display.none)
-gB    = input.int(2, "B desde (puntos)", group=g10, display=display.none)
-gA    = input.int(4, "A desde", group=g10, display=display.none)
-gAp   = input.int(6, "A+ desde", group=g10, display=display.none)
+g10 = "⑩ Trades en el gráfico"
+modoTr       = input.string("Solo los de hoy", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los de días anteriores (el día empieza a las 18:00 NY). 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
+maxTradesDib = input.int(10, "Máximo de trades a dibujar (los últimos N)", minval=1, maxval=40, group=g10, display=display.none)
+showRechazos = input.bool(false, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g10, tooltip="Etiqueta gris con el motivo en cada IFVG a favor que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
+maxRechDib   = input.int(3, "Señales rechazadas a marcar (las últimas N del día)", minval=0, maxval=20, group=g10, display=display.none)
 
-g11 = "⑪ Panel · alertas"
-showPanel     = input.bool(true, "Mostrar panel", group=g11, display=display.none)
-panelCompacto = input.bool(true, "Panel compacto", group=g11, display=display.none)
-panelTexto    = input.string("Normal", "Tamaño de texto del panel", options=["Pequeño", "Normal"], group=g11, display=display.none)
-panelPos      = input.string("Arriba derecha", "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g11, display=display.none)
-alertasJSON   = input.bool(false, "Emitir eventos JSON con alert() (programa externo, v2)", group=g11, display=display.none)
+g11 = "⑪ Grado (pesos) (operador)"
+wSMT  = input.int(1, "SMT en el barrido", group=g11, display=display.none)
+wSMTe = input.int(1, "SMT con estructura (CISD posterior en la misma dirección)", group=g11, display=display.none)
+wCISD = input.int(1, "CISD a favor en los últimos N minutos", group=g11, display=display.none)
+wHTF  = input.int(1, "Barrido de nivel HTF (PDH/PDL, sesión, EQ, swing 15m)", group=g11, display=display.none)
+wTF   = input.int(1, "IFVG en ≥3m o dentro de FVG vivo de 15m/1h/4h", group=g11, display=display.none)
+wAlin = input.int(1, "1D y 4H alineados", group=g11, display=display.none)
+wPD   = input.int(1, "Discount (largo) / premium (corto) del rango overnight", group=g11, display=display.none)
+gB    = input.int(2, "B desde (puntos)", group=g11, display=display.none)
+gA    = input.int(4, "A desde", group=g11, display=display.none)
+gAp   = input.int(6, "A+ desde", group=g11, display=display.none)
+
+g12 = "⑫ Panel · alertas"
+showPanel     = input.bool(true, "Mostrar panel", group=g12, display=display.none)
+panelCompacto = input.bool(true, "Panel compacto", group=g12, display=display.none)
+panelTexto    = input.string("Normal", "Tamaño de texto del panel", options=["Pequeño", "Normal"], group=g12, display=display.none)
+panelPos      = input.string("Arriba derecha", "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g12, display=display.none)
+alertasJSON   = input.bool(false, "Emitir eventos JSON con alert() (programa externo, v2)", group=g12, display=display.none)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COLORES · HELPERS
@@ -783,6 +797,13 @@ if usaEQ and biasAuto != 0 and array.size(s5.cs) > 0
     eqInval := biasAuto == 1 ? u5.c < eqPrev : u5.c > eqPrev
 int   bias     = biasMode == "Alcista" ? 1 : biasMode == "Bajista" ? -1 : biasMode == "Sin operar" ? 0 : eqInval ? 0 : biasAuto
 bool  alineado = bias != 0 and (lec1 == bias or lec2 == bias) and lec3 == bias
+// 1D y 4H alineados con la dirección d. Para un trade a favor del bias es lo mismo que 'alineado';
+// con el bias sin filtrar, un trade contra el bias solo suma si las lecturas van en su dirección.
+f_alin(int d) => (lec1 == d or lec2 == d) and lec3 == d
+// ¿Se puede operar y en qué dirección? Con el bias filtrando: solo a favor y nunca sin bias.
+// Sin filtrar: ambas direcciones, también sin bias; 'Sin operar' (manual) bloquea siempre.
+bool  puedeOperar = biasFiltra ? bias != 0 : biasMode != "Sin operar"
+f_dirOk(int d) => not biasFiltra or d == bias
 float mechaContra = biasAuto == 1 ? pdH - math.max(pdO, pdC) : biasAuto == -1 ? math.min(pdO, pdC) - pdL : 0
 bool  mechaGrande = rangoPD > 0 and mechaContra / rangoPD >= pctMecha / 100
 
@@ -895,7 +916,7 @@ f_confluencias(int dir, Fvg f, Sweep sw, float c, int tc) =>
     if f.tf >= 3 or enHtf
         pts += wTF
         conf := conf + (f.tf >= 3 ? str.tostring(f.tf) + "m " : "FVG-HTF ")
-    if alineado
+    if f_alin(dir)
         pts += wAlin
         conf := conf + "1D/4H "
     float eqON = (D.onH + D.onL) / 2
@@ -910,7 +931,8 @@ f_json(string evt, Trade t, int tc) =>
 f_abrir(int dir, float entry, float sl, float be, float tp, int tfSig, Fvg zona, string grado, string conf, bool reentrada, int tc) =>
     float riesgo = math.abs(entry - sl)
     float ctos = riesgo > 0 ? math.floor(cuenta * f_riesgoPct() / 100 / (riesgo * ptValue)) : 0
-    Trade t = Trade.new(dir=dir, entry=entry, sl0=sl, sl=sl, tp=tp, be=be, tEntry=tc, grado=grado, conf=conf, tf=tfSig, zona=zona, ctos=ctos, esReentrada=reentrada)
+    Trade t = Trade.new(dir=dir, entry=entry, sl0=sl, sl=sl, tp=tp, be=be, tEntry=tc, grado=grado, conf=conf, tf=tfSig, zona=zona, ctos=ctos, esReentrada=reentrada, biasEnt=bias)
+    zona.tUso := tc
     array.push(trades, t)
     if array.size(trades) > 40
         array.shift(trades)
@@ -1067,11 +1089,11 @@ f_minuto(float o, float h, float l, float c, float esH, float esL, int t, int tc
     D.enWin := inWinC
     int openTs = timestamp(TZ, year(t, TZ), month(t, TZ), dayofmonth(t, TZ), 9, 30)
     // 7. reentrada: la zona vuelve a respetarse (toca y cierra a favor sin perder el CE)
-    if not f_activo() and reentradaOn and D.reentradaDisp and inWinC and bias != 0 and D.tradesWin < maxTrades
+    if not f_activo() and reentradaOn and D.reentradaDisp and inWinC and puedeOperar and D.tradesWin < maxTrades
         if not na(D.zonaReentrada)
             Fvg z = D.zonaReentrada
             int dirZ = -z.dir
-            if z.state == 1 and dirZ == bias and not z.reentrada
+            if z.state == 1 and f_dirOk(dirZ) and not z.reentrada
                 bool toca = dirZ == 1 ? l <= z.top : h >= z.bot
                 bool respeta = dirZ == 1 ? (c >= z.ce and c > o) : (c <= z.ce and c < o)
                 if toca and respeta
@@ -1088,16 +1110,17 @@ f_minuto(float o, float h, float l, float c, float esH, float esL, int t, int tc
                         f_abrir(dirZ, ent, sl, be, tp, z.tf, z, f_grado(pts) + " (" + str.tostring(pts) + ")", conf, true, tc)
                         z.reentrada := true
                         D.reentradaDisp := false
-    // 8. señal nueva: primer IFVG a favor del bias dentro de la ventana
-    if array.size(nuevos) > 0 and inWinC and bias != 0 and not D.cerrado
+    // 8. señal nueva: primer IFVG a favor del bias (o en cualquier dirección si el bias no filtra) dentro de la ventana
+    if array.size(nuevos) > 0 and inWinC and puedeOperar and not D.cerrado
         Fvg mejor = na
         for f in nuevos
             int dI = -f.dir
-            bool ok = dI == bias and f_tfOn(f.tf) and (not fvgPostOpen or f.tBirth >= openTs)
+            bool ok = f_dirOk(dI) and f_tfOn(f.tf) and (not fvgPostOpen or f.tBirth >= openTs)
             if ok
                 if na(mejor)
                     mejor := f
-                else if f.tf > mejor.tf
+                // gana la TF mayor; si empatan en TF y van en direcciones opuestas, la del bias
+                else if f.tf > mejor.tf or (f.tf == mejor.tf and dI == bias and -mejor.dir != bias)
                     mejor := f
         if not na(mejor)
             int dir = -mejor.dir
@@ -1252,8 +1275,36 @@ f_label(int x, float y, string txt, string style, color bg, color txtc, string s
     label lb = label.new(x, y, txt, xloc=xloc.bar_time, style=style, color=bg, textcolor=txtc, size=sz, tooltip=tip)
     array.push(dLabels, lb)
 
+// ¿Se dibuja el trade i (de n)? Según "Trades a mostrar" (⑩), siempre dentro de los últimos N.
+// El trade activo, si lo hay, es siempre el último del array (no se abre otro mientras está activo).
+f_trVis(Trade tr, int i, int n) =>
+    bool r = i >= n - maxTradesDib
+    if modoTr == "Solo los de hoy"
+        r := r and tr.tEntry >= D.dayStart
+    else if modoTr == "Solo el último (activo o cerrado)"
+        r := i == n - 1
+    else if modoTr == "Solo el activo"
+        r := i == n - 1 and tr.estado == 0
+    r
+
+// La zona operada se ve solo si su trade se ve ("Todos" la deja siempre, como antes).
+f_zonaVis(Fvg f) =>
+    bool r = false
+    if f.usado
+        if modoTr == "Todos (los últimos N)"
+            r := true
+        else if not na(f.tUso)
+            int n = array.size(trades)
+            if modoTr == "Solo los de hoy"
+                r := f.tUso >= D.dayStart
+            else if n > 0
+                Trade u = array.last(trades)
+                r := u.tEntry == f.tUso and (modoTr == "Solo el último (activo o cerrado)" or u.estado == 0)
+    r
+
 // IFVG confirmados a dibujar: vivos de hoy + zona operada (+ muertos del día si se pide).
 // Con ifvgMaxMin > 0 se ocultan pasados N minutos desde la vela que los invirtió (la zona operada no).
+// Una zona operada cuyo trade está oculto se trata como un IFVG más.
 f_candIFVG(int tNow) =>
     array<Fvg> cand = array.new<Fvg>()
     for n = 1 to 5
@@ -1263,7 +1314,7 @@ f_candIFVG(int tNow) =>
                 if f.state == 1 or f.state == 2
                     bool hoy = f.tInv >= D.dayStart
                     bool vigente = ifvgMaxMin == 0 or tNow - f.tcInv <= ifvgMaxMin * 60000
-                    bool ok = f.usado or (hoy and vigente and (f.state == 1 or (f.state == 2 and mostrarMuertos)))
+                    bool ok = f_zonaVis(f) or (hoy and vigente and (f.state == 1 or (f.state == 2 and mostrarMuertos)))
                     if ok
                         array.push(cand, f)
     cand
@@ -1340,21 +1391,22 @@ f_calcFormacion(float cLive, int tUlt, int tNow) =>
 f_dibIFVG(int tNow) =>
     array<Fvg> cand = f_candIFVG(tNow)
     for f in cand
+        bool zv = f_zonaVis(f)
         bool tapado = false
-        if not f.usado
+        if not zv
             for g in cand
                 if g.tf > f.tf and g.dir == f.dir and g.top >= f.bot and g.bot <= f.top and math.abs(g.tInv - f.tInv) <= dedupMin * 60000
                     tapado := true
         if not tapado
             int dirI = -f.dir
             bool vivo = f.state == 1
-            color col = vivo or f.usado ? (dirI == 1 ? cIfvgBull : cIfvgBear) : cGris
-            color bc = color.new(col, f.usado ? 0 : 35)
-            color bg = color.new(col, f.usado ? 75 : 86)
+            color col = vivo or zv ? (dirI == 1 ? cIfvgBull : cIfvgBear) : cGris
+            color bc = color.new(col, zv ? 0 : 35)
+            color bg = color.new(col, zv ? 75 : 86)
             // la caja va desde el FVG original hasta la vela que lo invirtió, y termina ahí
             f_box(f.tBirth, f.top, f.tcInv, f.bot, bc, bg, "IFVG " + str.tostring(f.tf) + "m", color.new(col, 0), false, text.align_right, dirI == 1 ? text.align_bottom : text.align_top, line.style_solid)
             // la zona operada sigue punteada mientras esté viva (ahí se decide la reentrada)
-            if f.usado and extZona
+            if zv and extZona
                 int x2 = vivo ? tNow : f.tMuerte
                 f_box(f.tcInv, f.top, x2, f.bot, color.new(col, 45), color.new(col, 94), "", color.new(col, 100), vivo, text.align_right, text.align_center, line.style_dotted)
     // en formación: borde punteado sin relleno, desde el FVG original hasta la hora en que cierra la vela abierta
@@ -1477,35 +1529,39 @@ f_dibBarridos() =>
             string tipW = "Barrido " + f_nombreNivel(w.kind) + " @" + f_px(w.lvl) + " · mecha " + f_px(w.wick) + " · " + f_hhmm(w.t) + " · SMT " + (w.smt ? "✓" : "✗")
             f_label(w.t, w.wick, (w.side == 1 ? "▼ " : "▲ ") + f_nombreNivel(w.kind) + (w.smt ? " · SMT" : ""), w.side == 1 ? label.style_label_down : label.style_label_up, cEtiqBg, color.new(col, 0), szTxt, tipW)
 
-// Trades: los últimos N
+// Marca de dirección respecto del bias al entrar (solo aparece con el bias sin filtrar)
+f_marcaBias(Trade tr) => tr.biasEnt == 0 ? " · sin bias" : tr.biasEnt != tr.dir ? " · contra bias" : ""
+
+// Trades: según "Trades a mostrar" (⑩), dentro de los últimos N
 f_dibTrades(int tNow) =>
     int n = array.size(trades)
     if n > 0
         int desde = math.max(0, n - maxTradesDib)
         for i = desde to n - 1
             Trade tr = array.get(trades, i)
-            bool act = tr.estado == 0
-            int x2 = act ? tNow : tr.tExit
-            color col = tr.dir == 1 ? cBull : cBear
-            f_line(tr.tEntry, tr.entry, x2, tr.entry, color.new(cTexto, 35), line.style_solid, 1, act)
-            f_line(tr.tEntry, tr.tp, x2, tr.tp, cBull, line.style_solid, 1, act)
-            if tr.beMovido
-                f_line(tr.tEntry, tr.sl0, tr.tBE, tr.sl0, cBear, line.style_solid, 1, false)
-                f_line(tr.tBE, tr.entry, x2, tr.entry, cAmar, line.style_solid, 2, act)
-            else
-                f_line(tr.tEntry, tr.sl0, x2, tr.sl0, cBear, line.style_solid, 1, act)
-            if not na(tr.be) and not tr.beMovido
-                f_line(tr.tEntry, tr.be, x2, tr.be, color.new(cAmar, 30), line.style_dotted, 1, act)
-            float rk = math.abs(tr.entry - tr.sl0)
-            float rr = rk > 0 ? math.abs(tr.tp - tr.entry) / rk : na
-            string txt = (tr.dir == 1 ? "LONG " : "SHORT ") + str.tostring(tr.tf) + "m · " + tr.grado + " · " + str.tostring(rr, "#.0") + "R · " + str.tostring(tr.ctos, "#") + " ctos" + (tr.esReentrada ? " · reentrada" : "")
-            string tipE = "Entrada " + f_px(tr.entry) + " · SL " + f_px(tr.sl0) + " · TP " + f_px(tr.tp) + " · BE " + (na(tr.be) ? "—" : f_px(tr.be)) + " · " + str.tostring(tr.ctos, "#") + " ctos · " + tr.grado + " · " + (tr.conf == "" ? "sin confluencias" : tr.conf) + " · " + f_hhmm(tr.tEntry)
-            f_label(tr.tEntry, tr.sl0, txt, tr.dir == 1 ? label.style_label_up : label.style_label_down, color.new(col, 0), color.white, szTxtTr, tipE)
-            if not act
-                color cx = tr.r > 0 ? cBull : tr.r < 0 ? cBear : cAmar
-                f_label(tr.tExit, tr.pxExit, tr.salida + " " + f_signo(tr.r) + "R", tr.dir == 1 ? label.style_label_down : label.style_label_up, color.new(cx, 0), color.white, szTxtTr, "Salida por " + tr.salida + " @" + f_px(tr.pxExit) + " · " + f_signo(tr.r) + "R · " + f_hhmm(tr.tExit))
+            if f_trVis(tr, i, n)
+                bool act = tr.estado == 0
+                int x2 = act ? tNow : tr.tExit
+                color col = tr.dir == 1 ? cBull : cBear
+                f_line(tr.tEntry, tr.entry, x2, tr.entry, color.new(cTexto, 35), line.style_solid, 1, act)
+                f_line(tr.tEntry, tr.tp, x2, tr.tp, cBull, line.style_solid, 1, act)
+                if tr.beMovido
+                    f_line(tr.tEntry, tr.sl0, tr.tBE, tr.sl0, cBear, line.style_solid, 1, false)
+                    f_line(tr.tBE, tr.entry, x2, tr.entry, cAmar, line.style_solid, 2, act)
+                else
+                    f_line(tr.tEntry, tr.sl0, x2, tr.sl0, cBear, line.style_solid, 1, act)
+                if not na(tr.be) and not tr.beMovido
+                    f_line(tr.tEntry, tr.be, x2, tr.be, color.new(cAmar, 30), line.style_dotted, 1, act)
+                float rk = math.abs(tr.entry - tr.sl0)
+                float rr = rk > 0 ? math.abs(tr.tp - tr.entry) / rk : na
+                string txt = (tr.dir == 1 ? "LONG " : "SHORT ") + str.tostring(tr.tf) + "m · " + tr.grado + " · " + str.tostring(rr, "#.0") + "R · " + str.tostring(tr.ctos, "#") + " ctos" + (tr.esReentrada ? " · reentrada" : "") + f_marcaBias(tr)
+                string tipE = "Entrada " + f_px(tr.entry) + " · SL " + f_px(tr.sl0) + " · TP " + f_px(tr.tp) + " · BE " + (na(tr.be) ? "—" : f_px(tr.be)) + " · " + str.tostring(tr.ctos, "#") + " ctos · " + tr.grado + " · " + (tr.conf == "" ? "sin confluencias" : tr.conf) + f_marcaBias(tr) + " · " + f_hhmm(tr.tEntry)
+                f_label(tr.tEntry, tr.sl0, txt, tr.dir == 1 ? label.style_label_up : label.style_label_down, color.new(col, 0), color.white, szTxtTr, tipE)
+                if not act
+                    color cx = tr.r > 0 ? cBull : tr.r < 0 ? cBear : cAmar
+                    f_label(tr.tExit, tr.pxExit, tr.salida + " " + f_signo(tr.r) + "R", tr.dir == 1 ? label.style_label_down : label.style_label_up, color.new(cx, 0), color.white, szTxtTr, "Salida por " + tr.salida + " @" + f_px(tr.pxExit) + " · " + f_signo(tr.r) + "R · " + f_hhmm(tr.tExit))
 
-// IFVG a favor rechazados (hoy)
+// Señales rechazadas: IFVG a favor que no llegaron a trade (hoy)
 f_dibRechazos() =>
     int n = array.size(rechazos)
     if n > 0 and maxRechDib > 0
@@ -1544,7 +1600,7 @@ f_fila(table tb, int r, string k, string v, color cv) =>
 f_colorGrado(string g) =>
     str.startswith(g, "A") ? cBull : str.startswith(g, "B") ? cAmar : color.new(cTexto, 35)
 
-// Confluencias presentes AHORA para un trade en la dirección del bias, sin IFVG todavía.
+// Confluencias presentes AHORA para un trade en la dirección dir, sin IFVG todavía.
 // Devuelve puntos, detalle ✓/✗, texto del último barrido y si hay barrido válido.
 f_gradoAhora(int dir, int tc, float c) =>
     int tMin = tc - minBarrido * 60000
@@ -1563,19 +1619,22 @@ f_gradoAhora(int dir, int tc, float c) =>
     bool cisd = f_hayCISD(dir, tMin)
     float eqON = (D.onH + D.onL) / 2
     bool pd = not na(eqON) and (dir == 1 ? c < eqON : c > eqON)
-    int pts = (smt ? wSMT : 0) + (estr ? wSMTe : 0) + (cisd ? wCISD : 0) + (htfSw ? wHTF : 0) + (alineado ? wAlin : 0) + (pd ? wPD : 0)
-    string det = "SMT " + (smt ? "✓" : "✗") + " · estructura " + (estr ? "✓" : "✗") + " · CISD " + (cisd ? "✓" : "✗") + " · barrido HTF " + (htfSw ? "✓" : "✗") + " · 1D/4H " + (alineado ? "✓" : "✗") + " · " + (dir == 1 ? "discount " : "premium ") + (pd ? "✓" : "✗") + " · IFVG ≥3m/FVG HTF: pendiente"
+    int pts = (smt ? wSMT : 0) + (estr ? wSMTe : 0) + (cisd ? wCISD : 0) + (htfSw ? wHTF : 0) + (f_alin(dir) ? wAlin : 0) + (pd ? wPD : 0)
+    string det = "SMT " + (smt ? "✓" : "✗") + " · estructura " + (estr ? "✓" : "✗") + " · CISD " + (cisd ? "✓" : "✗") + " · barrido HTF " + (htfSw ? "✓" : "✗") + " · 1D/4H " + (f_alin(dir) ? "✓" : "✗") + " · " + (dir == 1 ? "discount " : "premium ") + (pd ? "✓" : "✗") + " · IFVG ≥3m/FVG HTF: pendiente"
     [pts, det, swTxt, haySw]
+
+// Texto del barrido previo que necesita un trade en la dirección d
+f_txtBarrido(int d, bool hay, string txt) => hay ? txt + " ✓" : "sin barrido " + (d == 1 ? "SSL" : "BSL") + " en " + str.tostring(minBarrido) + " min ✗"
 
 if showPanel and barstate.islast
     var table pnl = table.new(f_pos(panelPos), 2, panelCompacto ? 9 : 15, bgcolor=color.new(cFondo, 10), border_width=1, border_color=color.new(cTexto, 85))
     string tfTxt = timeframe.period + (timeframe.isminutes ? "m" : "")
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
-    table.cell(pnl, 0, 0, "IFVG v1.5", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+    table.cell(pnl, 0, 0, "IFVG v1.6", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
-    string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "")
+    string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra ? "" : " · no filtra los trades")
     string sLec = "vela previa " + f_sym(lec1) + " · desplaz. " + f_sym(lec2) + " · 4H " + f_sym(lec3) + (alineado ? " · alineados" : "") + (mechaGrande ? " · mecha grande" : "")
     // ventana
     int nowNY = f_nyMin(time_close)
@@ -1600,20 +1659,32 @@ if showPanel and barstate.islast
         sForm := "—"
     // setup en formación
     bool act = f_activo()
-    [ptsA, detA, swTxtA, haySwA] = f_gradoAhora(bias == 0 ? 1 : bias, time_close, close)
+    [ptsU, detU, swTxtU, haySwU] = f_gradoAhora(1, time_close, close)
+    [ptsD, detD, swTxtD, haySwD] = f_gradoAhora(-1, time_close, close)
+    // dirección que se detalla: la del bias si filtra; si no, la que hoy suma más (empate: bias, o alcista)
+    int dirSel = biasFiltra ? (bias == 0 ? 1 : bias) : ptsU > ptsD ? 1 : ptsD > ptsU ? -1 : bias == 0 ? 1 : bias
+    int ptsA = dirSel == 1 ? ptsU : ptsD
+    string detA = dirSel == 1 ? detU : detD
+    string swTxtA = dirSel == 1 ? swTxtU : swTxtD
+    bool haySwA = dirSel == 1 ? haySwU : haySwD
     int maxPts = wSMT + wSMTe + wCISD + wHTF + wTF + wAlin + wPD
-    string ladoSw = bias == 1 ? "SSL" : "BSL"
-    string sSet = bias == 0 ? "Sin bias → no se opera" : D.cerrado ? "Cupo cerrado: el primer IFVG a favor no cumplió (se reabre en la próxima ventana)" : act ? "Trade en curso" : D.tradesWin >= maxTrades ? "Máx. trades de la ventana" : (ventanaAbierta ? "ventana ✓" : "ventana ✗") + " · " + (haySwA ? swTxtA + " ✓" : "sin barrido " + ladoSw + " en " + str.tostring(minBarrido) + " min ✗") + " · IFVG " + (bias == 1 ? "alcista" : "bajista") + ": " + (D.reentradaDisp ? "esperando reentrada o uno nuevo" : "esperando el primero")
+    string sBarr = biasFiltra ? f_txtBarrido(dirSel, haySwA, swTxtA) : "↑ " + f_txtBarrido(1, haySwU, swTxtU) + " · ↓ " + f_txtBarrido(-1, haySwD, swTxtD)
+    string sDirIfvg = biasFiltra ? (bias == 1 ? "alcista" : "bajista") : "en cualquier dirección"
+    string sSet = not puedeOperar ? (biasMode == "Sin operar" ? "Sin operar (manual) → no se opera" : "Sin bias → no se opera") : D.cerrado ? "Cupo cerrado: el primer IFVG a favor no cumplió (se reabre en la próxima ventana)" : act ? "Trade en curso" : D.tradesWin >= maxTrades ? "Máx. trades de la ventana" : (ventanaAbierta ? "ventana ✓" : "ventana ✗") + " · " + sBarr + " · IFVG " + sDirIfvg + ": " + (D.reentradaDisp ? "esperando reentrada o uno nuevo" : "esperando el primero")
     string sConf = "—"
     string sGrado = "—"
     if act
         Trade tAct = D.activo
         sConf := tAct.conf == "" ? "sin confluencias" : tAct.conf
         sGrado := "Trade activo: " + tAct.grado
-    else if bias != 0 and not D.cerrado
-        sConf := detA
-        int conIfvg = ptsA + wTF
-        sGrado := "Si entra ahora: " + f_grado(ptsA) + " (" + str.tostring(ptsA) + "/" + str.tostring(maxPts) + ")" + (wTF > 0 ? " · con IFVG ≥3m o en FVG HTF: " + f_grado(conIfvg) : "")
+    else if puedeOperar and not D.cerrado
+        if biasFiltra
+            sConf := detA
+            int conIfvg = ptsA + wTF
+            sGrado := "Si entra ahora: " + f_grado(ptsA) + " (" + str.tostring(ptsA) + "/" + str.tostring(maxPts) + ")" + (wTF > 0 ? " · con IFVG ≥3m o en FVG HTF: " + f_grado(conIfvg) : "")
+        else
+            sConf := f_sym(dirSel) + " " + detA
+            sGrado := "Si entra ahora: ↑ " + f_grado(ptsU) + " (" + str.tostring(ptsU) + "/" + str.tostring(maxPts) + ") · ↓ " + f_grado(ptsD) + " (" + str.tostring(ptsD) + "/" + str.tostring(maxPts) + ")" + (wTF > 0 ? " · con IFVG ≥3m o en FVG HTF: ↑ " + f_grado(ptsU + wTF) + " · ↓ " + f_grado(ptsD + wTF) : "")
     string gradoLetra = f_grado(ptsA)
     if act
         gradoLetra := D.activo.grado
@@ -1634,13 +1705,13 @@ if showPanel and barstate.islast
         float rk = math.abs(t.entry - t.sl0)
         float rr = rk > 0 ? math.abs(t.tp - t.entry) / rk : na
         string est = t.estado == 0 ? (t.beMovido ? "activo · stop en BE" : "activo") : t.salida + " " + f_signo(t.r) + "R " + f_hhmm(t.tExit)
-        sTr := (hoy ? "" : str.format_time(t.tEntry, "dd/MM", tzPanel) + " · ") + (t.dir == 1 ? "LONG " : "SHORT ") + str.tostring(t.tf) + "m @" + f_px(t.entry) + " · SL " + f_px(t.sl) + " · TP " + f_px(t.tp) + " (" + str.tostring(rr, "#.0") + "R) · " + str.tostring(t.ctos, "#") + " ctos · " + est
+        sTr := (hoy ? "" : str.format_time(t.tEntry, "dd/MM", tzPanel) + " · ") + (t.dir == 1 ? "LONG " : "SHORT ") + str.tostring(t.tf) + "m @" + f_px(t.entry) + " · SL " + f_px(t.sl) + " · TP " + f_px(t.tp) + " (" + str.tostring(rr, "#.0") + "R) · " + str.tostring(t.ctos, "#") + " ctos · " + est + f_marcaBias(t)
     float rp = f_riesgoPct()
     string sDia = "Trades ventana " + str.tostring(D.tradesWin) + "/" + str.tostring(maxTrades) + " · hoy " + str.tostring(D.trades) + " · R " + f_signo(D.rDia) + " · pérdida " + str.tostring(D.perdidaPct, "#.##") + "% de " + str.tostring(maxPerdDia, "#.#") + "%" + (D.perdidaPct + rp > maxPerdDia + 0.0001 ? " · ⚠ el próximo excede el tope" : "")
     string sRk = str.tostring(rp, "#.#") + "% de " + str.tostring(cuenta, "#") + " USD = " + str.tostring(cuenta * rp / 100, "#") + " USD por trade"
     color cBiasTxt = bias == 1 ? cBull : bias == -1 ? cBear : color.new(cTexto, 35)
     color cVenTxt = ventanaAbierta ? cAmar : color.new(cTexto, 35)
-    color cGr = bias == 0 and not act ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
+    color cGr = not puedeOperar and not act ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
     color cForm = sForm == "—" ? color.new(cTexto, 35) : cAmar
     if panelCompacto
         f_fila(pnl, 1, "Bias", sBias + " · " + sLec, cBiasTxt)
