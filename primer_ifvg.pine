@@ -1503,11 +1503,11 @@ f_dibHTF(float c, int tNow) =>
     for f in vivos
         if f.sel
             color col = f.dir == 1 ? cHtfBull : cHtfBear
-            f_box(f.tBirth, f.top, tNow, f.bot, color.new(col, transpHTF), color.new(col, transpHTF), "FVG " + f.tf, color.new(col, math.max(transpHTF - 35, 0)), true, text.align_right, text.align_center, line.style_solid)
-            // CE (50% del gap), extendido igual que la caja
+            f_box(f.tBirth, f.top, tNow, f.bot, color.new(col, transpHTF), color.new(col, transpHTF), "FVG " + f.tf, color.new(col, math.max(transpHTF - 35, 0)), true, text.align_right, ceHtf ? (f.dir == 1 ? text.align_bottom : text.align_top) : text.align_center, line.style_solid)
+            // CE (50% del gap), extendido igual que la caja; con CE el rótulo va al borde para no quedar tachado
             if ceHtf
                 float ceH = (f.top + f.bot) / 2
-                f_line(f.tBirth, ceH, tNow, ceH, color.new(col, math.max(transpHTF - 45, 0)), ceEstilo, 1, true)
+                f_line(f.tBirth, ceH, tNow, ceH, color.new(col, math.max(transpHTF - 35, 0)), ceEstilo, 1, true)
 
 f_tipNivel(Level L) =>
     f_nombreNivel(L.kind) + " @" + f_px(L.p) + " · desde " + str.format_time(L.t, "dd/MM HH:mm", tzPanel) + (L.htf ? " · nivel HTF" : "") + (na(L.ref) ? "" : " · ES equivalente " + f_px(L.ref))
