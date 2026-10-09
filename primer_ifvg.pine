@@ -38,7 +38,8 @@
 //    además se extiende punteada mientras siga viva, para la reentrada). Si un
 //    IFVG de TF mayor solapa uno menor en la misma ventana, se ve el mayor.
 //    Con el input "Dejar de mostrar los IFVG después de N minutos" (⑨) los
-//    IFVG se ocultan N minutos después de invertirse (la zona operada no).
+//    IFVG se ocultan N minutos después de invertirse (la zona operada no,
+//    mientras se vea su trade).
 //  · En formación: si la vela ABIERTA de una TF cerrara al precio actual a
 //    través de un FVG vivo (→ IFVG) o de un nivel CISD armado (→ CISD), se
 //    dibuja punteado y sin relleno, con la hora a la que cierra esa vela
@@ -46,8 +47,9 @@
 //    Por defecto muestra cualquier dirección; hay un input para limitarla al
 //    bias. Misma deduplicación entre TFs que los confirmados.
 //  · Trades (⑩): elige cuáles se dibujan (todos los últimos N, solo los de
-//    hoy, solo el último o solo el activo); la zona operada sigue la misma
-//    regla. Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
+//    hoy, solo el último o solo el activo); el trade activo se ve siempre y
+//    la zona operada se ve solo si su trade se ve (en "Todos" se ven todas,
+//    como antes). Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
 //    sin barrido, RR…) están ocultas por defecto y se activan ahí mismo.
 //  · Colores: IFVG, CISD y trades comparten paleta (señal); los FVG de
 //    15m/1h/4h tienen la suya (contexto). Todos configurables.
@@ -280,7 +282,7 @@ maxVelasInv  = input.int(60, "Máx. velas (de su TF) para que un FVG se invierta
 limInvMin    = input.bool(false, "Límite uniforme en minutos para todas las TFs (en vez de velas de su TF)", group=g3, display=display.none)
 maxMinInv    = input.int(60, "Máx. minutos para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Solo se usa con el límite uniforme activado. Minutos de reloj desde el cierre de la vela que completa el FVG hasta el cierre de la que lo invierte, igual en 1m que en 5m.", display=display.none)
 maxVivos1m   = input.int(3, "'Sin claridad': FVGs vivos de 1m del mismo lado que anulan la señal de 1m (operador)", minval=1, group=g3, tooltip=OP, display=display.none)
-esperarOtro  = input.bool(true, "Si el primer IFVG a favor no cumple, seguir esperando otro", group=g3, display=display.none)
+esperarOtro  = input.bool(true, "Si el primer IFVG a favor no cumple, seguir esperando otro", group=g3, tooltip="Con el bias sin filtrar (②), 'a favor' significa el primer IFVG que se toma como señal, en cualquier dirección.", display=display.none)
 segundoNuevo = input.bool(true, "El 2º trade puede ser un IFVG nuevo (además de la reentrada)", group=g3, display=display.none)
 reentradaOn  = input.bool(true, "Permitir 1 reentrada si la zona se vuelve a respetar", group=g3, display=display.none)
 
@@ -328,7 +330,7 @@ transpHTF = input.int(95, "Transparencia", minval=50, maxval=99, group=g8, displ
 
 g9 = "⑨ Visual"
 mostrarMuertos = input.bool(false, "Dejar los IFVG muertos del día (gris)", group=g9, display=display.none)
-ifvgMaxMin = input.int(0, "Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)", minval=0, group=g9, tooltip="Cuenta desde el cierre de la vela que invirtió el FVG. Solo afecta al dibujo: no cambia la lógica de trading, y la zona operada sigue mostrándose mientras dure el trade o la reentrada.", display=display.none)
+ifvgMaxMin = input.int(0, "Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)", minval=0, group=g9, tooltip="Cuenta desde el cierre de la vela que invirtió el FVG. Solo afecta al dibujo: no cambia la lógica de trading, y la zona operada sigue mostrándose mientras se vea su trade (ver ⑩ 'Trades a mostrar'); si su trade está oculto, se trata como un IFVG más.", display=display.none)
 dedupMin  = input.int(10, "Deduplicar IFVG/CISD entre TFs: ventana (minutos) (operador)", minval=1, group=g9, tooltip=OP, display=display.none)
 dedupPts  = input.float(2.0, "Deduplicar CISD: niveles a menos de (puntos) (operador)", step=0.25, group=g9, tooltip=OP, display=display.none)
 cIfvgBull = input.color(#26a69a, "IFVG alcista", inline="c1", group=g9, display=display.none)
@@ -342,9 +344,9 @@ tamEtiq      = input.string("Normal", "Tamaño de las etiquetas del gráfico", o
 showSweepLbl = input.bool(true, "Marcar barridos de niveles HTF", group=g9, display=display.none)
 
 g10 = "⑩ Trades en el gráfico"
-modoTr       = input.string("Solo los de hoy", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los de días anteriores (el día empieza a las 18:00 NY). 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
+modoTr       = input.string("Solo los de hoy", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los cerrados de días anteriores (el día empieza a las 18:00 NY); el que sigue activo se ve siempre. 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve, salvo en 'Todos', donde se ven todas las zonas operadas, como antes. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
 maxTradesDib = input.int(10, "Máximo de trades a dibujar (los últimos N)", minval=1, maxval=40, group=g10, display=display.none)
-showRechazos = input.bool(false, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g10, tooltip="Etiqueta gris con el motivo en cada IFVG a favor que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
+showRechazos = input.bool(false, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g10, tooltip="Etiqueta gris con el motivo en cada IFVG elegido como señal (a favor del bias si el bias filtra; si no, en cualquier dirección) que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
 maxRechDib   = input.int(3, "Señales rechazadas a marcar (las últimas N del día)", minval=0, maxval=20, group=g10, display=display.none)
 
 g11 = "⑪ Grado (pesos) (operador)"
@@ -1280,14 +1282,14 @@ f_label(int x, float y, string txt, string style, color bg, color txtc, string s
 f_trVis(Trade tr, int i, int n) =>
     bool r = i >= n - maxTradesDib
     if modoTr == "Solo los de hoy"
-        r := r and tr.tEntry >= D.dayStart
+        r := r and (tr.tEntry >= D.dayStart or tr.estado == 0)
     else if modoTr == "Solo el último (activo o cerrado)"
         r := i == n - 1
     else if modoTr == "Solo el activo"
         r := i == n - 1 and tr.estado == 0
     r
 
-// La zona operada se ve solo si su trade se ve ("Todos" la deja siempre, como antes).
+// La zona operada se ve solo si su trade se ve ("Todos" la deja siempre, como antes, sin aplicar N).
 f_zonaVis(Fvg f) =>
     bool r = false
     if f.usado
@@ -1296,14 +1298,22 @@ f_zonaVis(Fvg f) =>
         else if not na(f.tUso)
             int n = array.size(trades)
             if modoTr == "Solo los de hoy"
-                r := f.tUso >= D.dayStart
+                // su trade (tEntry == tUso) debe ser de hoy y estar entre los últimos N dibujados, o seguir activo
+                int tCorte = D.dayStart
+                if n > maxTradesDib
+                    Trade c = array.get(trades, n - maxTradesDib)
+                    tCorte := c.tEntry > tCorte ? c.tEntry : tCorte
+                r := f.tUso >= tCorte
+                if not r and n > 0
+                    Trade ua = array.last(trades)
+                    r := ua.estado == 0 and ua.tEntry == f.tUso
             else if n > 0
                 Trade u = array.last(trades)
                 r := u.tEntry == f.tUso and (modoTr == "Solo el último (activo o cerrado)" or u.estado == 0)
     r
 
 // IFVG confirmados a dibujar: vivos de hoy + zona operada (+ muertos del día si se pide).
-// Con ifvgMaxMin > 0 se ocultan pasados N minutos desde la vela que los invirtió (la zona operada no).
+// Con ifvgMaxMin > 0 se ocultan pasados N minutos desde la vela que los invirtió (la zona operada visible no).
 // Una zona operada cuyo trade está oculto se trata como un IFVG más.
 f_candIFVG(int tNow) =>
     array<Fvg> cand = array.new<Fvg>()
@@ -1561,7 +1571,7 @@ f_dibTrades(int tNow) =>
                     color cx = tr.r > 0 ? cBull : tr.r < 0 ? cBear : cAmar
                     f_label(tr.tExit, tr.pxExit, tr.salida + " " + f_signo(tr.r) + "R", tr.dir == 1 ? label.style_label_down : label.style_label_up, color.new(cx, 0), color.white, szTxtTr, "Salida por " + tr.salida + " @" + f_px(tr.pxExit) + " · " + f_signo(tr.r) + "R · " + f_hhmm(tr.tExit))
 
-// Señales rechazadas: IFVG a favor que no llegaron a trade (hoy)
+// Señales rechazadas: IFVG elegidos como señal que no llegaron a trade (hoy)
 f_dibRechazos() =>
     int n = array.size(rechazos)
     if n > 0 and maxRechDib > 0
@@ -1634,7 +1644,7 @@ if showPanel and barstate.islast
     table.cell(pnl, 0, 0, "IFVG v1.6", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
-    string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra ? "" : " · no filtra los trades")
+    string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
     string sLec = "vela previa " + f_sym(lec1) + " · desplaz. " + f_sym(lec2) + " · 4H " + f_sym(lec3) + (alineado ? " · alineados" : "") + (mechaGrande ? " · mecha grande" : "")
     // ventana
     int nowNY = f_nyMin(time_close)
@@ -1670,7 +1680,7 @@ if showPanel and barstate.islast
     int maxPts = wSMT + wSMTe + wCISD + wHTF + wTF + wAlin + wPD
     string sBarr = biasFiltra ? f_txtBarrido(dirSel, haySwA, swTxtA) : "↑ " + f_txtBarrido(1, haySwU, swTxtU) + " · ↓ " + f_txtBarrido(-1, haySwD, swTxtD)
     string sDirIfvg = biasFiltra ? (bias == 1 ? "alcista" : "bajista") : "en cualquier dirección"
-    string sSet = not puedeOperar ? (biasMode == "Sin operar" ? "Sin operar (manual) → no se opera" : "Sin bias → no se opera") : D.cerrado ? "Cupo cerrado: el primer IFVG a favor no cumplió (se reabre en la próxima ventana)" : act ? "Trade en curso" : D.tradesWin >= maxTrades ? "Máx. trades de la ventana" : (ventanaAbierta ? "ventana ✓" : "ventana ✗") + " · " + sBarr + " · IFVG " + sDirIfvg + ": " + (D.reentradaDisp ? "esperando reentrada o uno nuevo" : "esperando el primero")
+    string sSet = not puedeOperar ? (biasMode == "Sin operar" ? "Sin operar (manual) → no se opera" : "Sin bias → no se opera") : D.cerrado ? "Cupo cerrado: el primer IFVG " + (biasFiltra ? "a favor " : "") + "no cumplió (se reabre en la próxima ventana)" : act ? "Trade en curso" : D.tradesWin >= maxTrades ? "Máx. trades de la ventana" : (ventanaAbierta ? "ventana ✓" : "ventana ✗") + " · " + sBarr + " · IFVG " + sDirIfvg + ": " + (D.reentradaDisp ? "esperando reentrada o uno nuevo" : "esperando el primero")
     string sConf = "—"
     string sGrado = "—"
     if act
