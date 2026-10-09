@@ -1725,6 +1725,11 @@ if showPanel and barstate.islast
     bool gradoEsMotivo = panelModo == "Mínimo" and not act and (not puedeOperar or D.cerrado or D.tradesWin >= maxTrades)
     if gradoEsMotivo
         sGrado := sSet
+    // sin fila Setup: si la ventana está cerrada o falta el barrido exigido (la reentrada no lo exige), el grado va en gris con el motivo delante
+    bool sinBarr = reqBarrido and not D.reentradaDisp and (biasFiltra ? not haySwA : not haySwU and not haySwD)
+    bool gradoAviso = panelModo == "Mínimo" and not act and not gradoEsMotivo and (not ventanaAbierta or sinBarr)
+    if gradoAviso
+        sGrado := (finde ? "fin de semana ✗ · " : not ventanaAbierta ? "ventana ✗ · " : "") + (sinBarr ? "sin barrido en " + str.tostring(minBarrido) + " min ✗ · " : "") + sGrado
     string gradoLetra = f_grado(ptsA)
     if act
         gradoLetra := D.activo.grado
@@ -1751,11 +1756,12 @@ if showPanel and barstate.islast
     string sRk = str.tostring(rp, "#.#") + "% de " + str.tostring(cuenta, "#") + " USD = " + str.tostring(cuenta * rp / 100, "#") + " USD por trade"
     color cBiasTxt = bias == 1 ? cBull : bias == -1 ? cBear : color.new(cTexto, 35)
     color cVenTxt = ventanaAbierta ? cAmar : color.new(cTexto, 35)
-    color cGr = gradoEsMotivo or (not puedeOperar and not act) ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
+    color cGr = gradoEsMotivo or gradoAviso or (not puedeOperar and not act) ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
     color cForm = sForm == "—" ? color.new(cTexto, 35) : cAmar
     if panelModo == "Mínimo"
         f_fila(pnl, 0, "Confluencias", sConf, cTexto)
-        f_fila(pnl, 1, "Grado", sGrado, cGr)
+        // sin cabecera: el aviso de temporalidad no soportada va delante del grado
+        f_fila(pnl, 1, "Grado", aviso == "" ? sGrado : aviso + " · " + sGrado, aviso == "" ? cGr : color.orange)
         f_fila(pnl, 2, "Trade", sTr, cTexto)
     else if panelModo == "Compacto"
         f_fila(pnl, 1, "Bias", sBias + " · " + sLec, cBiasTxt)
