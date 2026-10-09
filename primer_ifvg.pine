@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.6 (2026-10-09)
+//  PRIMER IFVG DE LA SESIÓN · v1.7 (2026-10-09)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -55,6 +55,10 @@
 //    15m/1h/4h tienen la suya (contexto). Todos configurables.
 //  · CISD: el último por TF y dirección de la sesión; misma deduplicación.
 //  · FVG 15m/1h/4h: los N más cercanos al precio por arriba y por abajo.
+//  · CE (consequent encroachment): el 50% del gap, de mecha a mecha. Se marca
+//    con una línea a rayas dentro de cada IFVG (también la zona operada y la
+//    vista previa) y de cada FVG de 15m/1h/4h. Es el mismo nivel cuyo cierre
+//    en contra mata un IFVG.
 //  · Niveles: PDH/PDL, Asia, Londres, pre-market, swings 15m, EQH/EQL.
 //    Swings 5m apagados por defecto. Los barridos se borran.
 //  · Etiquetas con fondo casi opaco del color del gráfico (legibles en tema
@@ -72,7 +76,7 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.6", shorttitle="IFVG v1.6", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.7", shorttitle="IFVG v1.7", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
 
@@ -338,6 +342,9 @@ cIfvgBear = input.color(#ef5350, "IFVG bajista", inline="c1", group=g9, display=
 cHtfBull  = input.color(#5c6bc0, "FVG 15m/1h/4h alcista", inline="c2", group=g9, display=display.none)
 cHtfBear  = input.color(#8d6e63, "FVG 15m/1h/4h bajista", inline="c2", group=g9, display=display.none)
 extZona   = input.bool(true, "Extender la zona operada mientras siga viva (punteado)", group=g9, display=display.none)
+ceIfvg    = input.bool(true, "Marcar el CE (50%) en: IFVG", inline="ce", group=g9, tooltip="Consequent encroachment: el punto medio del gap, (techo + piso) / 2, de mecha a mecha. Línea dentro de cada caja, del mismo color. En los IFVG cubre también la zona operada y la vista previa.", display=display.none)
+ceHtf     = input.bool(true, "FVG 15m/1h/4h", inline="ce", group=g9, display=display.none)
+ceEstiloIn = input.string("Rayas", "Estilo de la línea CE", options=["Rayas", "Puntos", "Sólida"], group=g9, display=display.none)
 showForm  = input.bool(true, "Vista previa 'en formación': IFVG/CISD que confirmaría la vela abierta (punteado)", group=g9, tooltip="Si la vela abierta de una TF cerrara al precio actual a través de un FVG vivo o de un nivel CISD armado, se dibuja punteado con la hora de cierre de esa vela. Desaparece si el precio se devuelve.", display=display.none)
 formBias  = input.bool(false, "Vista previa solo a favor del bias", group=g9, tooltip="Apagado: cualquier IFVG/CISD en formación, en ambas direcciones. Encendido: solo los de la dirección del bias (sin bias no muestra nada).", display=display.none)
 tamEtiq      = input.string("Normal", "Tamaño de las etiquetas del gráfico", options=["Pequeño", "Normal", "Grande"], group=g9, display=display.none)
@@ -381,6 +388,7 @@ cFondo = chart.bg_color
 cEtiqBg = color.new(cFondo, 8)
 szTxt   = tamEtiq == "Pequeño" ? size.tiny : tamEtiq == "Normal" ? size.small : size.normal
 szTxtTr = tamEtiq == "Pequeño" ? size.small : tamEtiq == "Normal" ? size.normal : size.large
+ceEstilo = ceEstiloIn == "Rayas" ? line.style_dashed : ceEstiloIn == "Puntos" ? line.style_dotted : line.style_solid
 
 f_nyMin(int ts) => hour(ts, TZ) * 60 + minute(ts, TZ)
 f_px(float x) => str.tostring(x, "#.##")
@@ -1415,10 +1423,15 @@ f_dibIFVG(int tNow) =>
             color bg = color.new(col, zv ? 75 : 86)
             // la caja va desde el FVG original hasta la vela que lo invirtió, y termina ahí
             f_box(f.tBirth, f.top, f.tcInv, f.bot, bc, bg, "IFVG " + str.tostring(f.tf) + "m", color.new(col, 0), false, text.align_right, dirI == 1 ? text.align_bottom : text.align_top, line.style_solid)
+            // CE (50% del gap) a lo largo de la caja
+            if ceIfvg
+                f_line(f.tBirth, f.ce, f.tcInv, f.ce, color.new(col, zv ? 15 : 35), ceEstilo, 1, false)
             // la zona operada sigue punteada mientras esté viva (ahí se decide la reentrada)
             if zv and extZona
                 int x2 = vivo ? tNow : f.tMuerte
                 f_box(f.tcInv, f.top, x2, f.bot, color.new(col, 45), color.new(col, 94), "", color.new(col, 100), vivo, text.align_right, text.align_center, line.style_dotted)
+                if ceIfvg
+                    f_line(f.tcInv, f.ce, x2, f.ce, color.new(col, 35), ceEstilo, 1, vivo)
     // en formación: borde punteado sin relleno, desde el FVG original hasta la hora en que cierra la vela abierta
     if showForm
         for f in formIfvg
@@ -1426,6 +1439,8 @@ f_dibIFVG(int tNow) =>
             color col = dirI == 1 ? cIfvgBull : cIfvgBear
             int tFin = f_tFin(f.tf, tUlt1m)
             f_box(f.tBirth, f.top, tFin, f.bot, color.new(col, 20), color.new(col, 100), "IFVG " + str.tostring(f.tf) + "m ⏳" + f_hhmm(tFin), color.new(col, 0), false, text.align_right, dirI == 1 ? text.align_bottom : text.align_top, line.style_dotted)
+            if ceIfvg
+                f_line(f.tBirth, f.ce, tFin, f.ce, color.new(col, 40), ceEstilo, 1, false)
 
 // CISD: el último por TF y dirección de la sesión (sólido) y en formación (punteado); misma deduplicación.
 f_dibCISD() =>
@@ -1489,6 +1504,10 @@ f_dibHTF(float c, int tNow) =>
         if f.sel
             color col = f.dir == 1 ? cHtfBull : cHtfBear
             f_box(f.tBirth, f.top, tNow, f.bot, color.new(col, transpHTF), color.new(col, transpHTF), "FVG " + f.tf, color.new(col, math.max(transpHTF - 35, 0)), true, text.align_right, text.align_center, line.style_solid)
+            // CE (50% del gap), extendido igual que la caja
+            if ceHtf
+                float ceH = (f.top + f.bot) / 2
+                f_line(f.tBirth, ceH, tNow, ceH, color.new(col, math.max(transpHTF - 45, 0)), ceEstilo, 1, true)
 
 f_tipNivel(Level L) =>
     f_nombreNivel(L.kind) + " @" + f_px(L.p) + " · desde " + str.format_time(L.t, "dd/MM HH:mm", tzPanel) + (L.htf ? " · nivel HTF" : "") + (na(L.ref) ? "" : " · ES equivalente " + f_px(L.ref))
@@ -1641,7 +1660,7 @@ if showPanel and barstate.islast
     string tfTxt = timeframe.period + (timeframe.isminutes ? "m" : "")
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
-    table.cell(pnl, 0, 0, "IFVG v1.6", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+    table.cell(pnl, 0, 0, "IFVG v1.7", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
     string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
@@ -1746,4 +1765,4 @@ if showPanel and barstate.islast
         f_fila(pnl, 11, "Último rechazo", D.ultimoMotivo == "" ? "—" : D.ultimoMotivo, color.new(cTexto, 35))
         f_fila(pnl, 12, "Día", sDia, cTexto)
         f_fila(pnl, 13, "Riesgo", sRk, color.new(cTexto, 35))
-        f_fila(pnl, 14, "Leyenda", "IFVG/CISD/trades: paleta de señal · punteado sin relleno = en formación (vela abierta) · FVG 15m/1h/4h: paleta de contexto · PDH/PDL ámbar · sesiones azul · swings gris · EQ violeta", color.new(cTexto, 50))
+        f_fila(pnl, 14, "Leyenda", "IFVG/CISD/trades: paleta de señal · punteado sin relleno = en formación (vela abierta) · línea interior = CE 50% · FVG 15m/1h/4h: paleta de contexto · PDH/PDL ámbar · sesiones azul · swings gris · EQ violeta", color.new(cTexto, 50))
