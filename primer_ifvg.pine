@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.9 (2026-10-23)
+//  PRIMER IFVG DE LA SESIÓN · v1.10 (2026-10-23)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -28,7 +28,11 @@
 //    El cupo de trades es POR VENTANA: se reinicia cada
 //    vez que la ventana abre, además del reinicio diario a las 18:00 NY.
 //  · Los inputs no se vuelcan en el título del indicador (display.none).
-//  · "El bias filtra los trades" (②): encendido, solo se opera a favor del
+//  · Configuración guardada: el bloque "TU CONFIGURACIÓN" (justo debajo) tiene
+//    el valor por defecto de cada ajuste. Lo que cambies ahí y guardes en el
+//    Editor Pine queda como predeterminado del script, aunque TradingView
+//    olvide los ajustes de la ventana al actualizar el código.
+//  · "El bias filtra los trades" (③): encendido, solo se opera a favor del
 //    bias y sin bias no se opera. Apagado, se toma el primer IFVG que cumpla
 //    en cualquier dirección, también sin bias ("Sin operar" sigue
 //    bloqueando); esos trades se marcan "contra bias" o "sin bias".
@@ -38,7 +42,7 @@
 //    termina ahí. Solo los de hoy que siguen vivos, más la zona operada (que
 //    además se extiende punteada mientras siga viva, para la reentrada). Si un
 //    IFVG de TF mayor solapa uno menor en la misma ventana, se ve el mayor.
-//    Con el input "Dejar de mostrar los IFVG después de N minutos" (⑨) los
+//    Con el input "Dejar de mostrar los IFVG después de N minutos" (⑩) los
 //    IFVG se ocultan N minutos después de invertirse (la zona operada no,
 //    mientras se vea su trade).
 //  · En formación: si la vela ABIERTA de una TF cerrara al precio actual a
@@ -47,10 +51,10 @@
 //    (⏳09:35). Al confirmarse pasa al trazo normal; si no, desaparece.
 //    Por defecto muestra cualquier dirección; hay un input para limitarla al
 //    bias. Misma deduplicación entre TFs que los confirmados.
-//  · Trades (⑩): elige cuáles se dibujan (todos los últimos N, solo los de
-//    hoy, solo el último o solo el activo); el trade activo se ve siempre y
-//    la zona operada se ve solo si su trade se ve (en "Todos" se ven todas,
-//    como antes). Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
+//  · Trades (①, el primer grupo de ajustes): ninguno, los últimos N, solo los
+//    de hoy, solo el último o solo el activo; el trade activo se ve siempre
+//    (salvo en "No mostrar") y la zona operada se ve solo si su trade se ve
+//    (en "Últimos N" se ven todas). Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
 //    sin barrido, RR…) están ocultas por defecto y se activan ahí mismo.
 //  · Cada trade se dibuja como una posición (la herramienta Long/Short de
 //    TradingView): caja verde de la entrada al TP y roja de la entrada al SL,
@@ -83,9 +87,142 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.9", shorttitle="IFVG v1.9", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.10", shorttitle="IFVG v1.10", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TU CONFIGURACIÓN (valores por defecto de los ajustes)
+//  Cada línea es el valor con que arranca un ajuste de la ventana de
+//  configuración, en el mismo orden. Para dejar un cambio guardado en el
+//  propio script: cambia el valor aquí, pulsa Guardar en el Editor Pine y
+//  vuelve a agregar el indicador (o "Restablecer configuración" en sus ajustes).
+//  Los textos de las listas deben escribirse igual que en sus opciones.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ① Trades en el gráfico
+const string cfg_modoTr = "Solo el último (activo o cerrado)"  // Trades a mostrar · opciones: No mostrar, Últimos N, Solo los de hoy, Solo el último (activo o cerrado), Solo el activo
+const int cfg_maxTradesDib = 10                                // N: trades a dibujar en 'Últimos N' (y máximo en los demás modos)
+const bool cfg_showRechazos = false                            // Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)
+const int cfg_maxRechDib = 3                                   // Señales rechazadas a marcar (las últimas N del día)
+
+// ② General
+const string cfg_esSym = "CME_MINI:ES1!"                       // Símbolo correlacionado (SMT)
+const float cfg_ptValue = 2.0                                  // Valor del punto en USD (MNQ = 2, NQ = 20)
+const int cfg_winIniH = 0                                      // Ventana de operación (hora NY) · desde
+const int cfg_winIniM = 30                                     // Ventana de operación · desde (minuto)
+const int cfg_winFinH = 0                                      // Ventana de operación · hasta (hora)
+const int cfg_winFinM = 10                                     // Ventana de operación · hasta (minuto)
+const int cfg_horaCierre = 16                                  // Cierre forzado de trades (hora NY)
+const string cfg_tzPanel = "America/Santiago"                  // Zona horaria para mostrar horas · opciones: America/Santiago, America/New_York, America/Chicago, Europe/Madrid, GMT+2, UTC
+
+// ③ Bias diario
+const string cfg_biasMode = "Auto"                             // Bias · opciones: Auto, Alcista, Bajista, Sin operar
+const bool cfg_biasFiltra = false                              // El bias filtra los trades (apagado: se opera en ambas direcciones)
+const float cfg_pctCierre = 70.0                               // Lectura 1: cierre 'cerca del extremo' (% del rango) (operador)
+const bool cfg_usaDespl = true                                 // Lectura 2: desplazamiento sobre el máximo/mínimo del día anterior
+const bool cfg_usa4H = true                                    // Lectura 3: order flow 4H (dos últimos pivotes)
+const bool cfg_usaEQ = true                                    // Invalidar bias si el 5m cierra del lado equivocado del EQ del día previo
+const float cfg_pctMecha = 40.0                                // Mecha grande en contra (% del rango) → aviso 'sin expansión' (operador)
+
+// ④ Señal IFVG
+const bool cfg_tf1 = true                                      // Señal en 1m
+const bool cfg_tf2 = true                                      // Señal en 2m
+const bool cfg_tf3 = true                                      // Señal en 3m
+const bool cfg_tf4 = true                                      // Señal en 4m
+const bool cfg_tf5 = true                                      // Señal en 5m
+const bool cfg_fvgPostOpen = false                             // Exigir que el FVG original también sea posterior a las 9:30
+const int cfg_fvgMinTicks = 0                                  // Tamaño mínimo del FVG en ticks (0 = sin filtro) (operador)
+const int cfg_maxVelasInv = 60                                 // Máx. velas (de su TF) para que un FVG se invierta; después caduca (0 = sin límite) (operador)
+const bool cfg_limInvMin = false                               // Límite uniforme en minutos para todas las TFs (en vez de velas de su TF)
+const int cfg_maxMinInv = 60                                   // Máx. minutos para que un FVG se invierta; después caduca (0 = sin límite) (operador)
+const int cfg_maxVivos1m = 3                                   // 'Sin claridad': FVGs vivos de 1m del mismo lado que anulan la señal de 1m (operador)
+const bool cfg_esperarOtro = true                              // Si el primer IFVG a favor no cumple, seguir esperando otro
+const bool cfg_segundoNuevo = true                             // El 2º trade puede ser un IFVG nuevo (además de la reentrada)
+const bool cfg_reentradaOn = true                              // Permitir 1 reentrada si la zona se vuelve a respetar
+
+// ⑤ Barrido previo · pivotes
+const bool cfg_reqBarrido = true                               // Exigir barrido de liquidez contraria en los últimos N minutos
+const int cfg_minBarrido = 20                                  // N minutos (operador)
+const bool cfg_barridoPiv = true                               // Cuentan también los pivotes de las TFs de señal
+const int cfg_graciaMin = 3                                    // Gracia para que un barrido de nivel cierre de vuelta (min) (operador)
+const int cfg_lenPiv = 2                                       // Velas a cada lado para pivotes (CISD, barridos, swing 5m) (operador)
+
+// ⑥ Stop · BE · TP
+const string cfg_stopMode = "Más lejano"                       // Stop en · opciones: Más lejano, Swing del barrido, Swing del IFVG
+const int cfg_colchonT = 2                                     // Colchón del stop (ticks) (operador)
+const string cfg_beMode = "Mecha"                              // El BE se dispara con · opciones: Mecha, Cierre
+const int cfg_minIntT = 10                                     // Swing interno mínimo a (ticks) de la entrada (operador)
+const string cfg_tpFuente = "5m + 15m"                         // Swing externo (TP) · opciones: 5m, 15m, 5m + 15m
+const bool cfg_tpFallback = true                               // Si no hay swing externo, usar el nivel de liquidez más cercano
+const float cfg_minRR = 1.0                                    // RR mínimo al TP
+
+// ⑦ Riesgo
+const float cfg_cuenta = 50000.0                               // Cuenta (USD)
+const string cfg_riesgoOpt = "0.7"                             // Riesgo por trade (%) · opciones: 0.5, 0.7, 1.0
+const int cfg_maxTrades = 10                                   // Máx. trades por ventana de operación
+const float cfg_maxPerdDia = 1.5                               // Pérdida máx. diaria (%) · solo aviso
+
+// ⑧ Liquidez
+const string cfg_sesAsia = "1900-0100"                         // Asia (hora NY)
+const string cfg_sesLon = "0200-0600"                          // Londres (hora NY)
+const string cfg_sesPM = "0700-0930"                           // Pre-market NY (hora NY)
+const bool cfg_showPD = true                                   // PDH / PDL
+const bool cfg_showSes = true                                  // Sesiones
+const bool cfg_showSw15 = true                                 // Swings 15m · EQH/EQL
+const bool cfg_showSw5 = true                                  // Swings 5m
+const int cfg_nEtiq = 3                                        // Etiquetas solo en los N niveles más cercanos por arriba y por abajo
+const bool cfg_mostrarBarridos = false                         // Dejar los niveles ya barridos (gris punteado)
+const float cfg_eqTolPts = 1.0                                 // Tolerancia equal highs/lows (puntos) (operador)
+const float cfg_sepATR = 0.5                                   // Separación mínima entre swings (× ATR de su TF) (operador)
+
+// ⑨ FVGs de fondo (15m / 1h / 4h)
+const bool cfg_show15 = true                                   // FVG de fondo 15m
+const bool cfg_show60 = true                                   // FVG de fondo 1h
+const bool cfg_show240 = true                                  // FVG de fondo 4h
+const int cfg_nCercanos = 3                                    // Mostrar los N más cercanos al precio por arriba y por abajo
+const int cfg_transpHTF = 93                                   // Transparencia
+const color cfg_cBordeHtf = #000000                            // Contorno
+const int cfg_opB15 = 20                                       // opacidad 15m
+const int cfg_opB60 = 45                                       // opacidad 1h
+const int cfg_opB240 = 75                                      // opacidad 4h
+
+// ⑩ Visual
+const bool cfg_mostrarMuertos = false                          // Dejar los IFVG muertos del día (gris)
+const int cfg_ifvgMaxMin = 0                                   // Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)
+const int cfg_dedupMin = 10                                    // Deduplicar IFVG/CISD entre TFs: ventana (minutos) (operador)
+const float cfg_dedupPts = 2.0                                 // Deduplicar CISD: niveles a menos de (puntos) (operador)
+const color cfg_cIfvgBull = #26a69a                            // IFVG alcista
+const color cfg_cIfvgBear = #ef5350                            // IFVG bajista
+const color cfg_cHtfBull = #1b5e20                             // FVG 15m/1h/4h alcista
+const color cfg_cHtfBear = #801922                             // FVG 15m/1h/4h bajista
+const bool cfg_extZona = true                                  // Extender la zona operada mientras siga viva (punteado)
+const bool cfg_ceIfvg = true                                   // Marcar el CE (50%) en: IFVG
+const bool cfg_ceHtf = true                                    // Marcar el CE (50%) en: FVG 15m/1h/4h
+const string cfg_ceEstiloIn = "Rayas"                          // Estilo de la línea CE · opciones: Rayas, Puntos, Sólida
+const bool cfg_showForm = true                                 // Vista previa 'en formación': IFVG/CISD que confirmaría la vela abierta (punteado)
+const bool cfg_formBias = false                                // Vista previa solo a favor del bias
+const string cfg_tamEtiq = "Normal"                            // Tamaño de las etiquetas del gráfico · opciones: Pequeño, Normal, Grande
+const bool cfg_showSweepLbl = true                             // Marcar barridos de niveles HTF
+
+// ⑪ Grado (pesos) (operador)
+const int cfg_wSMT = 1                                         // SMT en el barrido
+const int cfg_wSMTe = 1                                        // SMT con estructura (CISD posterior en la misma dirección)
+const int cfg_wCISD = 1                                        // CISD a favor en los últimos N minutos
+const int cfg_wHTF = 1                                         // Barrido de nivel HTF (PDH/PDL, sesión, EQ, swing 15m)
+const int cfg_wTF = 1                                          // IFVG en ≥3m o dentro de FVG vivo de 15m/1h/4h
+const int cfg_wAlin = 1                                        // 1D y 4H alineados
+const int cfg_wPD = 1                                          // Discount (largo) / premium (corto) del rango overnight
+const int cfg_gB = 2                                           // B desde (puntos)
+const int cfg_gA = 4                                           // A desde
+const int cfg_gAp = 6                                          // A+ desde
+
+// ⑫ Panel · alertas
+const bool cfg_showPanel = true                                // Mostrar panel
+const string cfg_panelModo = "Mínimo"                          // Contenido del panel · opciones: Mínimo, Compacto, Completo
+const string cfg_panelTexto = "Normal"                         // Tamaño de texto del panel · opciones: Pequeño, Normal
+const string cfg_panelPos = "Arriba derecha"                   // Posición del panel · opciones: Arriba derecha, Abajo derecha, Arriba izquierda, Abajo izquierda
+const bool cfg_alertasJSON = false                             // Emitir eventos JSON con alert() (programa externo, v2)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TIPOS
@@ -262,129 +399,129 @@ type Day
 // ─────────────────────────────────────────────────────────────────────────────
 OP = "Decisión del operador: la fuente no da este número."
 
-g1 = "① General"
-esSym      = input.symbol("CME_MINI:ES1!", "Símbolo correlacionado (SMT)", group=g1, display=display.none)
-ptValue    = input.float(2.0, "Valor del punto en USD (MNQ = 2, NQ = 20)", group=g1, display=display.none)
-winIniH    = input.int(0, "Ventana de operación (hora NY) · desde", minval=0, maxval=23, inline="win", group=g1, display=display.none)
-winIniM    = input.int(30, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
-winFinH    = input.int(0, "hasta", minval=0, maxval=23, inline="win", group=g1, display=display.none)
-winFinM    = input.int(10, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
-horaCierre = input.int(16, "Cierre forzado de trades (hora NY)", minval=0, maxval=23, group=g1, display=display.none)
-tzPanel    = input.string("America/Santiago", "Zona horaria para mostrar horas", options=["America/Santiago", "America/New_York", "America/Chicago", "Europe/Madrid", "GMT+2", "UTC"], group=g1, tooltip="La del gráfico aparece abajo a la derecha en TradingView (ej. UTC+2 → GMT+2).", display=display.none)
+g0 = "① Trades en el gráfico"
+modoTr       = input.string(cfg_modoTr, "Trades a mostrar", options=["No mostrar", "Últimos N", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g0, tooltip="Qué trades se dibujan. 'No mostrar' oculta todos (el panel sigue mostrando el trade). 'Últimos N' dibuja los últimos N de la línea de abajo, de cualquier día. 'Solo los de hoy' oculta los cerrados de días anteriores (el día empieza a las 18:00 NY); el que sigue activo se ve siempre. 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve, salvo en 'Últimos N', donde se ven todas las zonas operadas. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
+maxTradesDib = input.int(cfg_maxTradesDib, "N: trades a dibujar en 'Últimos N' (y máximo en los demás modos)", minval=1, maxval=40, group=g0, display=display.none)
+showRechazos = input.bool(cfg_showRechazos, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g0, tooltip="Etiqueta gris con el motivo en cada IFVG elegido como señal (a favor del bias si el bias filtra; si no, en cualquier dirección) que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
+maxRechDib   = input.int(cfg_maxRechDib, "Señales rechazadas a marcar (las últimas N del día)", minval=0, maxval=20, group=g0, display=display.none)
 
-g2 = "② Bias diario"
-biasMode  = input.string("Auto", "Bias", options=["Auto", "Alcista", "Bajista", "Sin operar"], group=g2, display=display.none)
-biasFiltra = input.bool(false, "El bias filtra los trades (apagado: se opera en ambas direcciones)", group=g2, tooltip="Encendido: solo IFVG a favor del bias, y sin bias no se opera. Apagado: se toma el primer IFVG que cumpla en cualquier dirección, también sin bias; 'Sin operar' sigue bloqueando. El punto de 1D/4H solo suma si las lecturas van en la dirección del trade. Los trades contra el bias o sin bias quedan marcados en el tooltip de la etiqueta del grado.", display=display.none)
-pctCierre = input.float(70, "Lectura 1: cierre 'cerca del extremo' (% del rango) (operador)", minval=50, maxval=100, group=g2, tooltip=OP, display=display.none)
-usaDespl  = input.bool(true, "Lectura 2: desplazamiento sobre el máximo/mínimo del día anterior", group=g2, display=display.none)
-usa4H     = input.bool(true, "Lectura 3: order flow 4H (dos últimos pivotes)", group=g2, display=display.none)
-usaEQ     = input.bool(true, "Invalidar bias si el 5m cierra del lado equivocado del EQ del día previo", group=g2, display=display.none)
-pctMecha  = input.float(40, "Mecha grande en contra (% del rango) → aviso 'sin expansión' (operador)", minval=10, maxval=90, group=g2, tooltip=OP, display=display.none)
+g1 = "② General"
+esSym      = input.symbol(cfg_esSym, "Símbolo correlacionado (SMT)", group=g1, display=display.none)
+ptValue    = input.float(cfg_ptValue, "Valor del punto en USD (MNQ = 2, NQ = 20)", group=g1, display=display.none)
+winIniH    = input.int(cfg_winIniH, "Ventana de operación (hora NY) · desde", minval=0, maxval=23, inline="win", group=g1, display=display.none)
+winIniM    = input.int(cfg_winIniM, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
+winFinH    = input.int(cfg_winFinH, "hasta", minval=0, maxval=23, inline="win", group=g1, display=display.none)
+winFinM    = input.int(cfg_winFinM, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
+horaCierre = input.int(cfg_horaCierre, "Cierre forzado de trades (hora NY)", minval=0, maxval=23, group=g1, display=display.none)
+tzPanel    = input.string(cfg_tzPanel, "Zona horaria para mostrar horas", options=["America/Santiago", "America/New_York", "America/Chicago", "Europe/Madrid", "GMT+2", "UTC"], group=g1, tooltip="La del gráfico aparece abajo a la derecha en TradingView (ej. UTC+2 → GMT+2).", display=display.none)
 
-g3 = "③ Señal IFVG"
-tf1 = input.bool(true, "1m", inline="tfs", group=g3, display=display.none)
-tf2 = input.bool(true, "2m", inline="tfs", group=g3, display=display.none)
-tf3 = input.bool(true, "3m", inline="tfs", group=g3, display=display.none)
-tf4 = input.bool(true, "4m", inline="tfs", group=g3, display=display.none)
-tf5 = input.bool(true, "5m", inline="tfs", group=g3, display=display.none)
-fvgPostOpen  = input.bool(false, "Exigir que el FVG original también sea posterior a las 9:30", group=g3, display=display.none)
-fvgMinTicks  = input.int(0, "Tamaño mínimo del FVG en ticks (0 = sin filtro) (operador)", minval=0, group=g3, tooltip=OP, display=display.none)
-maxVelasInv  = input.int(60, "Máx. velas (de su TF) para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Se cuenta en velas de la TF del FVG, desde la vela que lo completa hasta la que lo invierte: 60 velas = 1 h en 1m, 2 h en 2m, 3 h en 3m, 4 h en 4m, 5 h en 5m. No se usa si está activado el límite uniforme en minutos.", display=display.none)
-limInvMin    = input.bool(false, "Límite uniforme en minutos para todas las TFs (en vez de velas de su TF)", group=g3, display=display.none)
-maxMinInv    = input.int(60, "Máx. minutos para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Solo se usa con el límite uniforme activado. Minutos de reloj desde el cierre de la vela que completa el FVG hasta el cierre de la que lo invierte, igual en 1m que en 5m.", display=display.none)
-maxVivos1m   = input.int(3, "'Sin claridad': FVGs vivos de 1m del mismo lado que anulan la señal de 1m (operador)", minval=1, group=g3, tooltip=OP, display=display.none)
-esperarOtro  = input.bool(true, "Si el primer IFVG a favor no cumple, seguir esperando otro", group=g3, tooltip="Con el bias sin filtrar (②), 'a favor' significa el primer IFVG que se toma como señal, en cualquier dirección.", display=display.none)
-segundoNuevo = input.bool(true, "El 2º trade puede ser un IFVG nuevo (además de la reentrada)", group=g3, display=display.none)
-reentradaOn  = input.bool(true, "Permitir 1 reentrada si la zona se vuelve a respetar", group=g3, display=display.none)
+g2 = "③ Bias diario"
+biasMode  = input.string(cfg_biasMode, "Bias", options=["Auto", "Alcista", "Bajista", "Sin operar"], group=g2, display=display.none)
+biasFiltra = input.bool(cfg_biasFiltra, "El bias filtra los trades (apagado: se opera en ambas direcciones)", group=g2, tooltip="Encendido: solo IFVG a favor del bias, y sin bias no se opera. Apagado: se toma el primer IFVG que cumpla en cualquier dirección, también sin bias; 'Sin operar' sigue bloqueando. El punto de 1D/4H solo suma si las lecturas van en la dirección del trade. Los trades contra el bias o sin bias quedan marcados en el tooltip de la etiqueta del grado.", display=display.none)
+pctCierre = input.float(cfg_pctCierre, "Lectura 1: cierre 'cerca del extremo' (% del rango) (operador)", minval=50, maxval=100, group=g2, tooltip=OP, display=display.none)
+usaDespl  = input.bool(cfg_usaDespl, "Lectura 2: desplazamiento sobre el máximo/mínimo del día anterior", group=g2, display=display.none)
+usa4H     = input.bool(cfg_usa4H, "Lectura 3: order flow 4H (dos últimos pivotes)", group=g2, display=display.none)
+usaEQ     = input.bool(cfg_usaEQ, "Invalidar bias si el 5m cierra del lado equivocado del EQ del día previo", group=g2, display=display.none)
+pctMecha  = input.float(cfg_pctMecha, "Mecha grande en contra (% del rango) → aviso 'sin expansión' (operador)", minval=10, maxval=90, group=g2, tooltip=OP, display=display.none)
 
-g4 = "④ Barrido previo · pivotes"
-reqBarrido = input.bool(true, "Exigir barrido de liquidez contraria en los últimos N minutos", group=g4, display=display.none)
-minBarrido = input.int(20, "N minutos (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
-barridoPiv = input.bool(true, "Cuentan también los pivotes de las TFs de señal", group=g4, display=display.none)
-graciaMin  = input.int(3, "Gracia para que un barrido de nivel cierre de vuelta (min) (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
-lenPiv     = input.int(2, "Velas a cada lado para pivotes (CISD, barridos, swing 5m) (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
+g3 = "④ Señal IFVG"
+tf1 = input.bool(cfg_tf1, "1m", inline="tfs", group=g3, display=display.none)
+tf2 = input.bool(cfg_tf2, "2m", inline="tfs", group=g3, display=display.none)
+tf3 = input.bool(cfg_tf3, "3m", inline="tfs", group=g3, display=display.none)
+tf4 = input.bool(cfg_tf4, "4m", inline="tfs", group=g3, display=display.none)
+tf5 = input.bool(cfg_tf5, "5m", inline="tfs", group=g3, display=display.none)
+fvgPostOpen  = input.bool(cfg_fvgPostOpen, "Exigir que el FVG original también sea posterior a las 9:30", group=g3, display=display.none)
+fvgMinTicks  = input.int(cfg_fvgMinTicks, "Tamaño mínimo del FVG en ticks (0 = sin filtro) (operador)", minval=0, group=g3, tooltip=OP, display=display.none)
+maxVelasInv  = input.int(cfg_maxVelasInv, "Máx. velas (de su TF) para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Se cuenta en velas de la TF del FVG, desde la vela que lo completa hasta la que lo invierte: 60 velas = 1 h en 1m, 2 h en 2m, 3 h en 3m, 4 h en 4m, 5 h en 5m. No se usa si está activado el límite uniforme en minutos.", display=display.none)
+limInvMin    = input.bool(cfg_limInvMin, "Límite uniforme en minutos para todas las TFs (en vez de velas de su TF)", group=g3, display=display.none)
+maxMinInv    = input.int(cfg_maxMinInv, "Máx. minutos para que un FVG se invierta; después caduca (0 = sin límite) (operador)", minval=0, group=g3, tooltip=OP + " Solo se usa con el límite uniforme activado. Minutos de reloj desde el cierre de la vela que completa el FVG hasta el cierre de la que lo invierte, igual en 1m que en 5m.", display=display.none)
+maxVivos1m   = input.int(cfg_maxVivos1m, "'Sin claridad': FVGs vivos de 1m del mismo lado que anulan la señal de 1m (operador)", minval=1, group=g3, tooltip=OP, display=display.none)
+esperarOtro  = input.bool(cfg_esperarOtro, "Si el primer IFVG a favor no cumple, seguir esperando otro", group=g3, tooltip="Con el bias sin filtrar (③), 'a favor' significa el primer IFVG que se toma como señal, en cualquier dirección.", display=display.none)
+segundoNuevo = input.bool(cfg_segundoNuevo, "El 2º trade puede ser un IFVG nuevo (además de la reentrada)", group=g3, display=display.none)
+reentradaOn  = input.bool(cfg_reentradaOn, "Permitir 1 reentrada si la zona se vuelve a respetar", group=g3, display=display.none)
 
-g5 = "⑤ Stop · BE · TP"
-stopMode   = input.string("Más lejano", "Stop en", options=["Más lejano", "Swing del barrido", "Swing del IFVG"], group=g5, display=display.none)
-colchonT   = input.int(2, "Colchón del stop (ticks) (operador)", minval=0, group=g5, tooltip=OP, display=display.none)
-beMode     = input.string("Mecha", "El BE se dispara con", options=["Mecha", "Cierre"], group=g5, display=display.none)
-minIntT    = input.int(10, "Swing interno mínimo a (ticks) de la entrada (operador)", minval=0, group=g5, tooltip=OP, display=display.none)
-tpFuente   = input.string("5m + 15m", "Swing externo (TP)", options=["5m", "15m", "5m + 15m"], group=g5, display=display.none)
-tpFallback = input.bool(true, "Si no hay swing externo, usar el nivel de liquidez más cercano", group=g5, display=display.none)
-minRR      = input.float(1.0, "RR mínimo al TP", minval=0.1, step=0.1, group=g5, display=display.none)
+g4 = "⑤ Barrido previo · pivotes"
+reqBarrido = input.bool(cfg_reqBarrido, "Exigir barrido de liquidez contraria en los últimos N minutos", group=g4, display=display.none)
+minBarrido = input.int(cfg_minBarrido, "N minutos (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
+barridoPiv = input.bool(cfg_barridoPiv, "Cuentan también los pivotes de las TFs de señal", group=g4, display=display.none)
+graciaMin  = input.int(cfg_graciaMin, "Gracia para que un barrido de nivel cierre de vuelta (min) (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
+lenPiv     = input.int(cfg_lenPiv, "Velas a cada lado para pivotes (CISD, barridos, swing 5m) (operador)", minval=1, group=g4, tooltip=OP, display=display.none)
 
-g6 = "⑥ Riesgo"
-cuenta     = input.float(50000, "Cuenta (USD)", group=g6, display=display.none)
-riesgoOpt  = input.string("0.7", "Riesgo por trade (%)", options=["0.5", "0.7", "1.0"], group=g6, display=display.none)
-maxTrades  = input.int(10, "Máx. trades por ventana de operación", minval=1, group=g6, display=display.none)
-maxPerdDia = input.float(1.5, "Pérdida máx. diaria (%) · solo aviso", step=0.1, group=g6, display=display.none)
+g5 = "⑥ Stop · BE · TP"
+stopMode   = input.string(cfg_stopMode, "Stop en", options=["Más lejano", "Swing del barrido", "Swing del IFVG"], group=g5, display=display.none)
+colchonT   = input.int(cfg_colchonT, "Colchón del stop (ticks) (operador)", minval=0, group=g5, tooltip=OP, display=display.none)
+beMode     = input.string(cfg_beMode, "El BE se dispara con", options=["Mecha", "Cierre"], group=g5, display=display.none)
+minIntT    = input.int(cfg_minIntT, "Swing interno mínimo a (ticks) de la entrada (operador)", minval=0, group=g5, tooltip=OP, display=display.none)
+tpFuente   = input.string(cfg_tpFuente, "Swing externo (TP)", options=["5m", "15m", "5m + 15m"], group=g5, display=display.none)
+tpFallback = input.bool(cfg_tpFallback, "Si no hay swing externo, usar el nivel de liquidez más cercano", group=g5, display=display.none)
+minRR      = input.float(cfg_minRR, "RR mínimo al TP", minval=0.1, step=0.1, group=g5, display=display.none)
 
-g7 = "⑦ Liquidez"
-sesAsia  = input.session("1900-0100", "Asia (hora NY)", group=g7, display=display.none)
-sesLon   = input.session("0200-0600", "Londres (hora NY)", group=g7, display=display.none)
-sesPM    = input.session("0700-0930", "Pre-market NY (hora NY)", group=g7, display=display.none)
-showPD   = input.bool(true, "PDH / PDL", inline="niv", group=g7, display=display.none)
-showSes  = input.bool(true, "Sesiones", inline="niv", group=g7, display=display.none)
-showSw15 = input.bool(true, "Swings 15m · EQH/EQL", inline="niv", group=g7, display=display.none)
-showSw5  = input.bool(true, "Swings 5m", inline="niv", group=g7, display=display.none)
-nEtiq    = input.int(3, "Etiquetas solo en los N niveles más cercanos por arriba y por abajo", minval=0, maxval=10, group=g7, display=display.none)
-mostrarBarridos = input.bool(false, "Dejar los niveles ya barridos (gris punteado)", group=g7, display=display.none)
-eqTolPts = input.float(1.0, "Tolerancia equal highs/lows (puntos) (operador)", step=0.25, group=g7, tooltip=OP, display=display.none)
-sepATR   = input.float(0.5, "Separación mínima entre swings (× ATR de su TF) (operador)", step=0.1, group=g7, tooltip=OP, display=display.none)
+g6 = "⑦ Riesgo"
+cuenta     = input.float(cfg_cuenta, "Cuenta (USD)", group=g6, display=display.none)
+riesgoOpt  = input.string(cfg_riesgoOpt, "Riesgo por trade (%)", options=["0.5", "0.7", "1.0"], group=g6, display=display.none)
+maxTrades  = input.int(cfg_maxTrades, "Máx. trades por ventana de operación", minval=1, group=g6, display=display.none)
+maxPerdDia = input.float(cfg_maxPerdDia, "Pérdida máx. diaria (%) · solo aviso", step=0.1, group=g6, display=display.none)
 
-g8 = "⑧ FVGs de fondo (15m / 1h / 4h)"
-show15    = input.bool(true, "15m", inline="htf", group=g8, display=display.none)
-show60    = input.bool(true, "1h", inline="htf", group=g8, display=display.none)
-show240   = input.bool(true, "4h", inline="htf", group=g8, display=display.none)
-nCercanos = input.int(3, "Mostrar los N más cercanos al precio por arriba y por abajo", minval=0, maxval=6, group=g8, display=display.none)
-transpHTF = input.int(93, "Transparencia", minval=50, maxval=99, group=g8, display=display.none)
-cBordeHtf = input.color(#000000, "Contorno", inline="bhtf", group=g8, tooltip="Color del contorno de las cajas. La opacidad va por temporalidad (0 = sin contorno, 100 = sólido): más clara en 15m, más oscura en 4h.", display=display.none)
-opB15     = input.int(20, "opacidad 15m", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
-opB60     = input.int(45, "1h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
-opB240    = input.int(75, "4h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
+g7 = "⑧ Liquidez"
+sesAsia  = input.session(cfg_sesAsia, "Asia (hora NY)", group=g7, display=display.none)
+sesLon   = input.session(cfg_sesLon, "Londres (hora NY)", group=g7, display=display.none)
+sesPM    = input.session(cfg_sesPM, "Pre-market NY (hora NY)", group=g7, display=display.none)
+showPD   = input.bool(cfg_showPD, "PDH / PDL", inline="niv", group=g7, display=display.none)
+showSes  = input.bool(cfg_showSes, "Sesiones", inline="niv", group=g7, display=display.none)
+showSw15 = input.bool(cfg_showSw15, "Swings 15m · EQH/EQL", inline="niv", group=g7, display=display.none)
+showSw5  = input.bool(cfg_showSw5, "Swings 5m", inline="niv", group=g7, display=display.none)
+nEtiq    = input.int(cfg_nEtiq, "Etiquetas solo en los N niveles más cercanos por arriba y por abajo", minval=0, maxval=10, group=g7, display=display.none)
+mostrarBarridos = input.bool(cfg_mostrarBarridos, "Dejar los niveles ya barridos (gris punteado)", group=g7, display=display.none)
+eqTolPts = input.float(cfg_eqTolPts, "Tolerancia equal highs/lows (puntos) (operador)", step=0.25, group=g7, tooltip=OP, display=display.none)
+sepATR   = input.float(cfg_sepATR, "Separación mínima entre swings (× ATR de su TF) (operador)", step=0.1, group=g7, tooltip=OP, display=display.none)
 
-g9 = "⑨ Visual"
-mostrarMuertos = input.bool(false, "Dejar los IFVG muertos del día (gris)", group=g9, display=display.none)
-ifvgMaxMin = input.int(0, "Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)", minval=0, group=g9, tooltip="Cuenta desde el cierre de la vela que invirtió el FVG. Solo afecta al dibujo: no cambia la lógica de trading, y la zona operada sigue mostrándose mientras se vea su trade (ver ⑩ 'Trades a mostrar'); si su trade está oculto, se trata como un IFVG más.", display=display.none)
-dedupMin  = input.int(10, "Deduplicar IFVG/CISD entre TFs: ventana (minutos) (operador)", minval=1, group=g9, tooltip=OP, display=display.none)
-dedupPts  = input.float(2.0, "Deduplicar CISD: niveles a menos de (puntos) (operador)", step=0.25, group=g9, tooltip=OP, display=display.none)
-cIfvgBull = input.color(#26a69a, "IFVG alcista", inline="c1", group=g9, display=display.none)
-cIfvgBear = input.color(#ef5350, "IFVG bajista", inline="c1", group=g9, display=display.none)
-cHtfBull  = input.color(#1b5e20, "FVG 15m/1h/4h alcista", inline="c2", group=g9, display=display.none)
-cHtfBear  = input.color(#801922, "FVG 15m/1h/4h bajista", inline="c2", group=g9, display=display.none)
-extZona   = input.bool(true, "Extender la zona operada mientras siga viva (punteado)", group=g9, display=display.none)
-ceIfvg    = input.bool(true, "Marcar el CE (50%) en: IFVG", inline="ce", group=g9, tooltip="Consequent encroachment: el punto medio del gap, (techo + piso) / 2, de mecha a mecha. Línea dentro de cada caja, del mismo color. En los IFVG cubre también la zona operada y la vista previa.", display=display.none)
-ceHtf     = input.bool(true, "FVG 15m/1h/4h", inline="ce", group=g9, display=display.none)
-ceEstiloIn = input.string("Rayas", "Estilo de la línea CE", options=["Rayas", "Puntos", "Sólida"], group=g9, display=display.none)
-showForm  = input.bool(true, "Vista previa 'en formación': IFVG/CISD que confirmaría la vela abierta (punteado)", group=g9, tooltip="Si la vela abierta de una TF cerrara al precio actual a través de un FVG vivo o de un nivel CISD armado, se dibuja punteado con la hora de cierre de esa vela. Desaparece si el precio se devuelve.", display=display.none)
-formBias  = input.bool(false, "Vista previa solo a favor del bias", group=g9, tooltip="Apagado: cualquier IFVG/CISD en formación, en ambas direcciones. Encendido: solo los de la dirección del bias (sin bias no muestra nada).", display=display.none)
-tamEtiq      = input.string("Normal", "Tamaño de las etiquetas del gráfico", options=["Pequeño", "Normal", "Grande"], group=g9, display=display.none)
-showSweepLbl = input.bool(true, "Marcar barridos de niveles HTF", group=g9, display=display.none)
+g8 = "⑨ FVGs de fondo (15m / 1h / 4h)"
+show15    = input.bool(cfg_show15, "15m", inline="htf", group=g8, display=display.none)
+show60    = input.bool(cfg_show60, "1h", inline="htf", group=g8, display=display.none)
+show240   = input.bool(cfg_show240, "4h", inline="htf", group=g8, display=display.none)
+nCercanos = input.int(cfg_nCercanos, "Mostrar los N más cercanos al precio por arriba y por abajo", minval=0, maxval=6, group=g8, display=display.none)
+transpHTF = input.int(cfg_transpHTF, "Transparencia", minval=50, maxval=99, group=g8, display=display.none)
+cBordeHtf = input.color(cfg_cBordeHtf, "Contorno", inline="bhtf", group=g8, tooltip="Color del contorno de las cajas. La opacidad va por temporalidad (0 = sin contorno, 100 = sólido): más clara en 15m, más oscura en 4h.", display=display.none)
+opB15     = input.int(cfg_opB15, "opacidad 15m", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
+opB60     = input.int(cfg_opB60, "1h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
+opB240    = input.int(cfg_opB240, "4h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
 
-g10 = "⑩ Trades en el gráfico"
-modoTr       = input.string("Solo el último (activo o cerrado)", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los cerrados de días anteriores (el día empieza a las 18:00 NY); el que sigue activo se ve siempre. 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve, salvo en 'Todos', donde se ven todas las zonas operadas, como antes. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
-maxTradesDib = input.int(10, "Máximo de trades a dibujar (los últimos N)", minval=1, maxval=40, group=g10, display=display.none)
-showRechazos = input.bool(false, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g10, tooltip="Etiqueta gris con el motivo en cada IFVG elegido como señal (a favor del bias si el bias filtra; si no, en cualquier dirección) que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
-maxRechDib   = input.int(3, "Señales rechazadas a marcar (las últimas N del día)", minval=0, maxval=20, group=g10, display=display.none)
+g9 = "⑩ Visual"
+mostrarMuertos = input.bool(cfg_mostrarMuertos, "Dejar los IFVG muertos del día (gris)", group=g9, display=display.none)
+ifvgMaxMin = input.int(cfg_ifvgMaxMin, "Dejar de mostrar los IFVG después de (minutos desde que se invierten; 0 = mientras sigan vivos)", minval=0, group=g9, tooltip="Cuenta desde el cierre de la vela que invirtió el FVG. Solo afecta al dibujo: no cambia la lógica de trading, y la zona operada sigue mostrándose mientras se vea su trade (ver ① 'Trades a mostrar'); si su trade está oculto, se trata como un IFVG más.", display=display.none)
+dedupMin  = input.int(cfg_dedupMin, "Deduplicar IFVG/CISD entre TFs: ventana (minutos) (operador)", minval=1, group=g9, tooltip=OP, display=display.none)
+dedupPts  = input.float(cfg_dedupPts, "Deduplicar CISD: niveles a menos de (puntos) (operador)", step=0.25, group=g9, tooltip=OP, display=display.none)
+cIfvgBull = input.color(cfg_cIfvgBull, "IFVG alcista", inline="c1", group=g9, display=display.none)
+cIfvgBear = input.color(cfg_cIfvgBear, "IFVG bajista", inline="c1", group=g9, display=display.none)
+cHtfBull  = input.color(cfg_cHtfBull, "FVG 15m/1h/4h alcista", inline="c2", group=g9, display=display.none)
+cHtfBear  = input.color(cfg_cHtfBear, "FVG 15m/1h/4h bajista", inline="c2", group=g9, display=display.none)
+extZona   = input.bool(cfg_extZona, "Extender la zona operada mientras siga viva (punteado)", group=g9, display=display.none)
+ceIfvg    = input.bool(cfg_ceIfvg, "Marcar el CE (50%) en: IFVG", inline="ce", group=g9, tooltip="Consequent encroachment: el punto medio del gap, (techo + piso) / 2, de mecha a mecha. Línea dentro de cada caja, del mismo color. En los IFVG cubre también la zona operada y la vista previa.", display=display.none)
+ceHtf     = input.bool(cfg_ceHtf, "FVG 15m/1h/4h", inline="ce", group=g9, display=display.none)
+ceEstiloIn = input.string(cfg_ceEstiloIn, "Estilo de la línea CE", options=["Rayas", "Puntos", "Sólida"], group=g9, display=display.none)
+showForm  = input.bool(cfg_showForm, "Vista previa 'en formación': IFVG/CISD que confirmaría la vela abierta (punteado)", group=g9, tooltip="Si la vela abierta de una TF cerrara al precio actual a través de un FVG vivo o de un nivel CISD armado, se dibuja punteado con la hora de cierre de esa vela. Desaparece si el precio se devuelve.", display=display.none)
+formBias  = input.bool(cfg_formBias, "Vista previa solo a favor del bias", group=g9, tooltip="Apagado: cualquier IFVG/CISD en formación, en ambas direcciones. Encendido: solo los de la dirección del bias (sin bias no muestra nada).", display=display.none)
+tamEtiq      = input.string(cfg_tamEtiq, "Tamaño de las etiquetas del gráfico", options=["Pequeño", "Normal", "Grande"], group=g9, display=display.none)
+showSweepLbl = input.bool(cfg_showSweepLbl, "Marcar barridos de niveles HTF", group=g9, display=display.none)
 
 g11 = "⑪ Grado (pesos) (operador)"
-wSMT  = input.int(1, "SMT en el barrido", group=g11, display=display.none)
-wSMTe = input.int(1, "SMT con estructura (CISD posterior en la misma dirección)", group=g11, display=display.none)
-wCISD = input.int(1, "CISD a favor en los últimos N minutos", group=g11, display=display.none)
-wHTF  = input.int(1, "Barrido de nivel HTF (PDH/PDL, sesión, EQ, swing 15m)", group=g11, display=display.none)
-wTF   = input.int(1, "IFVG en ≥3m o dentro de FVG vivo de 15m/1h/4h", group=g11, display=display.none)
-wAlin = input.int(1, "1D y 4H alineados", group=g11, display=display.none)
-wPD   = input.int(1, "Discount (largo) / premium (corto) del rango overnight", group=g11, display=display.none)
-gB    = input.int(2, "B desde (puntos)", group=g11, display=display.none)
-gA    = input.int(4, "A desde", group=g11, display=display.none)
-gAp   = input.int(6, "A+ desde", group=g11, display=display.none)
+wSMT  = input.int(cfg_wSMT, "SMT en el barrido", group=g11, display=display.none)
+wSMTe = input.int(cfg_wSMTe, "SMT con estructura (CISD posterior en la misma dirección)", group=g11, display=display.none)
+wCISD = input.int(cfg_wCISD, "CISD a favor en los últimos N minutos", group=g11, display=display.none)
+wHTF  = input.int(cfg_wHTF, "Barrido de nivel HTF (PDH/PDL, sesión, EQ, swing 15m)", group=g11, display=display.none)
+wTF   = input.int(cfg_wTF, "IFVG en ≥3m o dentro de FVG vivo de 15m/1h/4h", group=g11, display=display.none)
+wAlin = input.int(cfg_wAlin, "1D y 4H alineados", group=g11, display=display.none)
+wPD   = input.int(cfg_wPD, "Discount (largo) / premium (corto) del rango overnight", group=g11, display=display.none)
+gB    = input.int(cfg_gB, "B desde (puntos)", group=g11, display=display.none)
+gA    = input.int(cfg_gA, "A desde", group=g11, display=display.none)
+gAp   = input.int(cfg_gAp, "A+ desde", group=g11, display=display.none)
 
 g12 = "⑫ Panel · alertas"
-showPanel     = input.bool(true, "Mostrar panel", group=g12, display=display.none)
-panelModo     = input.string("Mínimo", "Contenido del panel", options=["Mínimo", "Compacto", "Completo"], group=g12, tooltip="Mínimo: confluencias, grado y trade. Compacto: además bias, ventana, setup, en formación y día. Completo: todo, con último barrido, CISD y rechazo, riesgo y leyenda.", display=display.none)
-panelTexto    = input.string("Normal", "Tamaño de texto del panel", options=["Pequeño", "Normal"], group=g12, display=display.none)
-panelPos      = input.string("Arriba derecha", "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g12, display=display.none)
-alertasJSON   = input.bool(false, "Emitir eventos JSON con alert() (programa externo, v2)", group=g12, display=display.none)
+showPanel     = input.bool(cfg_showPanel, "Mostrar panel", group=g12, display=display.none)
+panelModo     = input.string(cfg_panelModo, "Contenido del panel", options=["Mínimo", "Compacto", "Completo"], group=g12, tooltip="Mínimo: confluencias, grado y trade. Compacto: además bias, ventana, setup, en formación y día. Completo: todo, con último barrido, CISD y rechazo, riesgo y leyenda.", display=display.none)
+panelTexto    = input.string(cfg_panelTexto, "Tamaño de texto del panel", options=["Pequeño", "Normal"], group=g12, display=display.none)
+panelPos      = input.string(cfg_panelPos, "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g12, display=display.none)
+alertasJSON   = input.bool(cfg_alertasJSON, "Emitir eventos JSON con alert() (programa externo, v2)", group=g12, display=display.none)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COLORES · HELPERS
@@ -1296,10 +1433,10 @@ f_label(int x, float y, string txt, string style, color bg, color txtc, string s
     label lb = label.new(x, y, txt, xloc=xloc.bar_time, style=style, color=bg, textcolor=txtc, size=sz, tooltip=tip)
     array.push(dLabels, lb)
 
-// ¿Se dibuja el trade i (de n)? Según "Trades a mostrar" (⑩), siempre dentro de los últimos N.
+// ¿Se dibuja el trade i (de n)? Según "Trades a mostrar" (①), siempre dentro de los últimos N.
 // El trade activo, si lo hay, es siempre el último del array (no se abre otro mientras está activo).
 f_trVis(Trade tr, int i, int n) =>
-    bool r = i >= n - maxTradesDib
+    bool r = modoTr != "No mostrar" and i >= n - maxTradesDib
     if modoTr == "Solo los de hoy"
         r := r and (tr.tEntry >= D.dayStart or tr.estado == 0)
     else if modoTr == "Solo el último (activo o cerrado)"
@@ -1308,11 +1445,11 @@ f_trVis(Trade tr, int i, int n) =>
         r := i == n - 1 and tr.estado == 0
     r
 
-// La zona operada se ve solo si su trade se ve ("Todos" la deja siempre, como antes, sin aplicar N).
+// La zona operada se ve solo si su trade se ve ("Últimos N" la deja siempre, sin aplicar N; "No mostrar", nunca).
 f_zonaVis(Fvg f) =>
     bool r = false
-    if f.usado
-        if modoTr == "Todos (los últimos N)"
+    if f.usado and modoTr != "No mostrar"
+        if modoTr == "Últimos N"
             r := true
         else if not na(f.tUso)
             int n = array.size(trades)
@@ -1574,7 +1711,7 @@ f_dibBarridos() =>
 // Marca de dirección respecto del bias al entrar (solo aparece con el bias sin filtrar)
 f_marcaBias(Trade tr) => tr.biasEnt == 0 ? " · sin bias" : tr.biasEnt != tr.dir ? " · contra bias" : ""
 
-// Trades como posición (herramienta Long/Short de TradingView), según "Trades a mostrar" (⑩), dentro de
+// Trades como posición (herramienta Long/Short de TradingView), según "Trades a mostrar" (①), dentro de
 // los últimos N: caja verde entrada→TP y roja entrada→SL, con el precio de cada nivel escrito en su caja.
 // La única etiqueta es el grado, apuntando a la entrada; el detalle completo va en su tooltip.
 f_dibTrades(int tNow) =>
@@ -1688,7 +1825,7 @@ if showPanel and barstate.islast
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
     if panelModo != "Mínimo"
-        table.cell(pnl, 0, 0, "IFVG v1.9", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+        table.cell(pnl, 0, 0, "IFVG v1.10", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
         table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
     string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
