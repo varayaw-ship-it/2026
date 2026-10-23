@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.8 (2026-10-09)
+//  PRIMER IFVG DE LA SESIÓN · v1.9 (2026-10-23)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -23,8 +23,9 @@
 //    iguales para todas las TFs (default 60). 0 = sin límite. Así un FVG
 //    de las 00:00 no aparece invertido a las 09:00.
 //  · Cada número que las fuentes no definen es un input marcado "(operador)".
-//  · Ventana de operación por hora y minuto (default 09:30–10:10 NY); puede
-//    cruzar medianoche. El cupo de trades es POR VENTANA: se reinicia cada
+//  · Ventana de operación por hora y minuto (default 00:30–00:10 NY, casi todo
+//    el día; el plan de Fede usa 09:30–10:10); puede cruzar medianoche.
+//    El cupo de trades es POR VENTANA: se reinicia cada
 //    vez que la ventana abre, además del reinicio diario a las 18:00 NY.
 //  · Los inputs no se vuelcan en el título del indicador (display.none).
 //  · "El bias filtra los trades" (②): encendido, solo se opera a favor del
@@ -51,6 +52,11 @@
 //    la zona operada se ve solo si su trade se ve (en "Todos" se ven todas,
 //    como antes). Las señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades,
 //    sin barrido, RR…) están ocultas por defecto y se activan ahí mismo.
+//  · Cada trade se dibuja como una posición (la herramienta Long/Short de
+//    TradingView): caja verde de la entrada al TP y roja de la entrada al SL,
+//    con el precio de entrada, SL y TP escrito en las cajas. La única etiqueta
+//    es el grado, sobre la entrada; el detalle completo va en su tooltip. Al
+//    cerrar, la caja termina en la salida y el resultado va junto a la entrada.
 //  · Colores: IFVG, CISD y trades comparten paleta (señal); los FVG de
 //    15m/1h/4h tienen la suya (contexto). Todos configurables.
 //  · CISD: el último por TF y dirección de la sesión; misma deduplicación.
@@ -62,7 +68,7 @@
 //    vista previa) y de cada FVG de 15m/1h/4h. Es el mismo nivel cuyo cierre
 //    en contra mata un IFVG.
 //  · Niveles: PDH/PDL, Asia, Londres, pre-market, swings 15m, EQH/EQL.
-//    Swings 5m apagados por defecto. Los barridos se borran.
+//    Swings 5m encendidos por defecto. Los barridos se borran.
 //  · Etiquetas con fondo casi opaco del color del gráfico (legibles en tema
 //    claro y oscuro) y tamaño configurable; el detalle va en el tooltip.
 //  · Panel mínimo por defecto: confluencias ✓/✗, el grado que tendría el
@@ -77,7 +83,7 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.8", shorttitle="IFVG v1.8", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.9", shorttitle="IFVG v1.9", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
 
@@ -259,16 +265,16 @@ OP = "Decisión del operador: la fuente no da este número."
 g1 = "① General"
 esSym      = input.symbol("CME_MINI:ES1!", "Símbolo correlacionado (SMT)", group=g1, display=display.none)
 ptValue    = input.float(2.0, "Valor del punto en USD (MNQ = 2, NQ = 20)", group=g1, display=display.none)
-winIniH    = input.int(9, "Ventana de operación (hora NY) · desde", minval=0, maxval=23, inline="win", group=g1, display=display.none)
+winIniH    = input.int(0, "Ventana de operación (hora NY) · desde", minval=0, maxval=23, inline="win", group=g1, display=display.none)
 winIniM    = input.int(30, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
-winFinH    = input.int(10, "hasta", minval=0, maxval=23, inline="win", group=g1, display=display.none)
+winFinH    = input.int(0, "hasta", minval=0, maxval=23, inline="win", group=g1, display=display.none)
 winFinM    = input.int(10, ":", minval=0, maxval=59, inline="win", group=g1, display=display.none)
 horaCierre = input.int(16, "Cierre forzado de trades (hora NY)", minval=0, maxval=23, group=g1, display=display.none)
 tzPanel    = input.string("America/Santiago", "Zona horaria para mostrar horas", options=["America/Santiago", "America/New_York", "America/Chicago", "Europe/Madrid", "GMT+2", "UTC"], group=g1, tooltip="La del gráfico aparece abajo a la derecha en TradingView (ej. UTC+2 → GMT+2).", display=display.none)
 
 g2 = "② Bias diario"
 biasMode  = input.string("Auto", "Bias", options=["Auto", "Alcista", "Bajista", "Sin operar"], group=g2, display=display.none)
-biasFiltra = input.bool(true, "El bias filtra los trades (apagado: se opera en ambas direcciones)", group=g2, tooltip="Encendido: solo IFVG a favor del bias, y sin bias no se opera. Apagado: se toma el primer IFVG que cumpla en cualquier dirección, también sin bias; 'Sin operar' sigue bloqueando. El punto de 1D/4H solo suma si las lecturas van en la dirección del trade. Los trades contra el bias o sin bias quedan marcados en la etiqueta.", display=display.none)
+biasFiltra = input.bool(false, "El bias filtra los trades (apagado: se opera en ambas direcciones)", group=g2, tooltip="Encendido: solo IFVG a favor del bias, y sin bias no se opera. Apagado: se toma el primer IFVG que cumpla en cualquier dirección, también sin bias; 'Sin operar' sigue bloqueando. El punto de 1D/4H solo suma si las lecturas van en la dirección del trade. Los trades contra el bias o sin bias quedan marcados en el tooltip de la etiqueta del grado.", display=display.none)
 pctCierre = input.float(70, "Lectura 1: cierre 'cerca del extremo' (% del rango) (operador)", minval=50, maxval=100, group=g2, tooltip=OP, display=display.none)
 usaDespl  = input.bool(true, "Lectura 2: desplazamiento sobre el máximo/mínimo del día anterior", group=g2, display=display.none)
 usa4H     = input.bool(true, "Lectura 3: order flow 4H (dos últimos pivotes)", group=g2, display=display.none)
@@ -310,7 +316,7 @@ minRR      = input.float(1.0, "RR mínimo al TP", minval=0.1, step=0.1, group=g5
 g6 = "⑥ Riesgo"
 cuenta     = input.float(50000, "Cuenta (USD)", group=g6, display=display.none)
 riesgoOpt  = input.string("0.7", "Riesgo por trade (%)", options=["0.5", "0.7", "1.0"], group=g6, display=display.none)
-maxTrades  = input.int(2, "Máx. trades por ventana de operación", minval=1, group=g6, display=display.none)
+maxTrades  = input.int(10, "Máx. trades por ventana de operación", minval=1, group=g6, display=display.none)
 maxPerdDia = input.float(1.5, "Pérdida máx. diaria (%) · solo aviso", step=0.1, group=g6, display=display.none)
 
 g7 = "⑦ Liquidez"
@@ -320,7 +326,7 @@ sesPM    = input.session("0700-0930", "Pre-market NY (hora NY)", group=g7, displ
 showPD   = input.bool(true, "PDH / PDL", inline="niv", group=g7, display=display.none)
 showSes  = input.bool(true, "Sesiones", inline="niv", group=g7, display=display.none)
 showSw15 = input.bool(true, "Swings 15m · EQH/EQL", inline="niv", group=g7, display=display.none)
-showSw5  = input.bool(false, "Swings 5m", inline="niv", group=g7, display=display.none)
+showSw5  = input.bool(true, "Swings 5m", inline="niv", group=g7, display=display.none)
 nEtiq    = input.int(3, "Etiquetas solo en los N niveles más cercanos por arriba y por abajo", minval=0, maxval=10, group=g7, display=display.none)
 mostrarBarridos = input.bool(false, "Dejar los niveles ya barridos (gris punteado)", group=g7, display=display.none)
 eqTolPts = input.float(1.0, "Tolerancia equal highs/lows (puntos) (operador)", step=0.25, group=g7, tooltip=OP, display=display.none)
@@ -330,8 +336,8 @@ g8 = "⑧ FVGs de fondo (15m / 1h / 4h)"
 show15    = input.bool(true, "15m", inline="htf", group=g8, display=display.none)
 show60    = input.bool(true, "1h", inline="htf", group=g8, display=display.none)
 show240   = input.bool(true, "4h", inline="htf", group=g8, display=display.none)
-nCercanos = input.int(2, "Mostrar los N más cercanos al precio por arriba y por abajo", minval=0, maxval=6, group=g8, display=display.none)
-transpHTF = input.int(95, "Transparencia", minval=50, maxval=99, group=g8, display=display.none)
+nCercanos = input.int(3, "Mostrar los N más cercanos al precio por arriba y por abajo", minval=0, maxval=6, group=g8, display=display.none)
+transpHTF = input.int(93, "Transparencia", minval=50, maxval=99, group=g8, display=display.none)
 cBordeHtf = input.color(#000000, "Contorno", inline="bhtf", group=g8, tooltip="Color del contorno de las cajas. La opacidad va por temporalidad (0 = sin contorno, 100 = sólido): más clara en 15m, más oscura en 4h.", display=display.none)
 opB15     = input.int(20, "opacidad 15m", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
 opB60     = input.int(45, "1h", minval=0, maxval=100, inline="bhtf", group=g8, display=display.none)
@@ -344,8 +350,8 @@ dedupMin  = input.int(10, "Deduplicar IFVG/CISD entre TFs: ventana (minutos) (op
 dedupPts  = input.float(2.0, "Deduplicar CISD: niveles a menos de (puntos) (operador)", step=0.25, group=g9, tooltip=OP, display=display.none)
 cIfvgBull = input.color(#26a69a, "IFVG alcista", inline="c1", group=g9, display=display.none)
 cIfvgBear = input.color(#ef5350, "IFVG bajista", inline="c1", group=g9, display=display.none)
-cHtfBull  = input.color(#5c6bc0, "FVG 15m/1h/4h alcista", inline="c2", group=g9, display=display.none)
-cHtfBear  = input.color(#8d6e63, "FVG 15m/1h/4h bajista", inline="c2", group=g9, display=display.none)
+cHtfBull  = input.color(#1b5e20, "FVG 15m/1h/4h alcista", inline="c2", group=g9, display=display.none)
+cHtfBear  = input.color(#801922, "FVG 15m/1h/4h bajista", inline="c2", group=g9, display=display.none)
 extZona   = input.bool(true, "Extender la zona operada mientras siga viva (punteado)", group=g9, display=display.none)
 ceIfvg    = input.bool(true, "Marcar el CE (50%) en: IFVG", inline="ce", group=g9, tooltip="Consequent encroachment: el punto medio del gap, (techo + piso) / 2, de mecha a mecha. Línea dentro de cada caja, del mismo color. En los IFVG cubre también la zona operada y la vista previa.", display=display.none)
 ceHtf     = input.bool(true, "FVG 15m/1h/4h", inline="ce", group=g9, display=display.none)
@@ -356,7 +362,7 @@ tamEtiq      = input.string("Normal", "Tamaño de las etiquetas del gráfico", o
 showSweepLbl = input.bool(true, "Marcar barridos de niveles HTF", group=g9, display=display.none)
 
 g10 = "⑩ Trades en el gráfico"
-modoTr       = input.string("Solo los de hoy", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los cerrados de días anteriores (el día empieza a las 18:00 NY); el que sigue activo se ve siempre. 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve, salvo en 'Todos', donde se ven todas las zonas operadas, como antes. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
+modoTr       = input.string("Solo el último (activo o cerrado)", "Trades a mostrar", options=["Todos (los últimos N)", "Solo los de hoy", "Solo el último (activo o cerrado)", "Solo el activo"], group=g10, tooltip="Qué trades se dibujan. 'Solo los de hoy' oculta los cerrados de días anteriores (el día empieza a las 18:00 NY); el que sigue activo se ve siempre. 'Solo el último' deja el activo o, si no hay, el último cerrado. 'Solo el activo' no dibuja nada cuando no hay trade abierto. La zona operada se ve solo si su trade se ve, salvo en 'Todos', donde se ven todas las zonas operadas, como antes. Solo afecta al dibujo: no cambia la lógica ni el panel.", display=display.none)
 maxTradesDib = input.int(10, "Máximo de trades a dibujar (los últimos N)", minval=1, maxval=40, group=g10, display=display.none)
 showRechazos = input.bool(false, "Mostrar señales rechazadas (IFVG que no llegó a trade: ✗ máx. trades, sin barrido, RR…)", group=g10, tooltip="Etiqueta gris con el motivo en cada IFVG elegido como señal (a favor del bias si el bias filtra; si no, en cualquier dirección) que no se convirtió en trade. El panel completo sigue mostrando el último rechazo.", display=display.none)
 maxRechDib   = input.int(3, "Señales rechazadas a marcar (las últimas N del día)", minval=0, maxval=20, group=g10, display=display.none)
@@ -1568,34 +1574,48 @@ f_dibBarridos() =>
 // Marca de dirección respecto del bias al entrar (solo aparece con el bias sin filtrar)
 f_marcaBias(Trade tr) => tr.biasEnt == 0 ? " · sin bias" : tr.biasEnt != tr.dir ? " · contra bias" : ""
 
-// Trades: según "Trades a mostrar" (⑩), dentro de los últimos N
+// Trades como posición (herramienta Long/Short de TradingView), según "Trades a mostrar" (⑩), dentro de
+// los últimos N: caja verde entrada→TP y roja entrada→SL, con el precio de cada nivel escrito en su caja.
+// La única etiqueta es el grado, apuntando a la entrada; el detalle completo va en su tooltip.
 f_dibTrades(int tNow) =>
     int n = array.size(trades)
     if n > 0
+        int barMs = timeframe.in_seconds() * 1000
         int desde = math.max(0, n - maxTradesDib)
         for i = desde to n - 1
             Trade tr = array.get(trades, i)
             if f_trVis(tr, i, n)
                 bool act = tr.estado == 0
-                int x2 = act ? tNow : tr.tExit
-                color col = tr.dir == 1 ? cBull : cBear
-                f_line(tr.tEntry, tr.entry, x2, tr.entry, color.new(cTexto, 35), line.style_solid, 1, act)
-                f_line(tr.tEntry, tr.tp, x2, tr.tp, cBull, line.style_solid, 1, act)
-                if tr.beMovido
-                    f_line(tr.tEntry, tr.sl0, tr.tBE, tr.sl0, cBear, line.style_solid, 1, false)
-                    f_line(tr.tBE, tr.entry, x2, tr.entry, cAmar, line.style_solid, 2, act)
-                else
-                    f_line(tr.tEntry, tr.sl0, x2, tr.sl0, cBear, line.style_solid, 1, act)
-                if not na(tr.be) and not tr.beMovido
-                    f_line(tr.tEntry, tr.be, x2, tr.be, color.new(cAmar, 30), line.style_dotted, 1, act)
+                // ancho mínimo para que la posición se vea apenas abre (activo: 5 velas del gráfico; cerrado: 1)
+                int x2 = act ? math.max(tNow, tr.tEntry + 5 * barMs) : math.max(tr.tExit, tr.tEntry + barMs)
+                int trFondo = act ? 78 : 88
                 float rk = math.abs(tr.entry - tr.sl0)
                 float rr = rk > 0 ? math.abs(tr.tp - tr.entry) / rk : na
-                string txt = (tr.dir == 1 ? "LONG " : "SHORT ") + str.tostring(tr.tf) + "m · " + tr.grado + " · " + str.tostring(rr, "#.0") + "R · " + str.tostring(tr.ctos, "#") + " ctos" + (tr.esReentrada ? " · reentrada" : "") + f_marcaBias(tr)
-                string tipE = "Entrada " + f_px(tr.entry) + " · SL " + f_px(tr.sl0) + " · TP " + f_px(tr.tp) + " · BE " + (na(tr.be) ? "—" : f_px(tr.be)) + " · " + str.tostring(tr.ctos, "#") + " ctos · " + tr.grado + " · " + (tr.conf == "" ? "sin confluencias" : tr.conf) + f_marcaBias(tr) + " · " + f_hhmm(tr.tEntry)
-                f_label(tr.tEntry, tr.sl0, txt, tr.dir == 1 ? label.style_label_up : label.style_label_down, color.new(col, 0), color.white, szTxtTr, tipE)
-                if not act
-                    color cx = tr.r > 0 ? cBull : tr.r < 0 ? cBear : cAmar
-                    f_label(tr.tExit, tr.pxExit, tr.salida + " " + f_signo(tr.r) + "R", tr.dir == 1 ? label.style_label_down : label.style_label_up, color.new(cx, 0), color.white, szTxtTr, "Salida por " + tr.salida + " @" + f_px(tr.pxExit) + " · " + f_signo(tr.r) + "R · " + f_hhmm(tr.tExit))
+                // el texto de cada caja va pegado a su nivel: TP y SL en el borde lejano, la entrada en el borde común
+                string vTP  = tr.dir == 1 ? text.align_top : text.align_bottom
+                string vSL  = tr.dir == 1 ? text.align_bottom : text.align_top
+                string vEnt = tr.dir == 1 ? text.align_bottom : text.align_top
+                float topTP = math.max(tr.entry, tr.tp)
+                float botTP = math.min(tr.entry, tr.tp)
+                // zona de ganancia (entrada → TP)
+                string txtTP = "TP " + f_px(tr.tp) + " · " + str.tostring(rr, "#.0") + "R" + (tr.salida == "TP" ? " ✓" : "")
+                f_box(tr.tEntry, topTP, x2, botTP, color.new(cBull, 40), color.new(cBull, trFondo), txtTP, color.new(cBull, 0), false, text.align_left, vTP, line.style_solid)
+                // zona de riesgo (entrada → SL original)
+                string txtSL = "SL " + f_px(tr.sl0) + (tr.beMovido ? " → BE " + f_hhmm(tr.tBE) : "") + (tr.salida == "SL" ? " ✗" : "")
+                f_box(tr.tEntry, math.max(tr.entry, tr.sl0), x2, math.min(tr.entry, tr.sl0), color.new(cBear, 40), color.new(cBear, trFondo), txtSL, color.new(cBear, 0), false, text.align_left, vSL, line.style_solid)
+                // entrada: línea y precio (caja transparente sobre la zona de ganancia, texto en el borde de la entrada)
+                string txtEnt = "Entrada " + f_px(tr.entry) + " · " + str.tostring(tr.ctos, "#") + " ctos" + (act ? "" : " → " + tr.salida + " " + f_signo(tr.r) + "R")
+                f_box(tr.tEntry, topTP, x2, botTP, color.new(cTexto, 100), color.new(cTexto, 100), txtEnt, color.new(cTexto, 0), false, text.align_left, vEnt, line.style_solid)
+                f_line(tr.tEntry, tr.entry, x2, tr.entry, color.new(cTexto, 20), line.style_solid, 1, false)
+                // BE: nivel que lo dispara (punteado) o, ya movido, el stop en la entrada desde ese momento
+                if tr.beMovido
+                    f_line(tr.tBE, tr.entry, x2, tr.entry, cAmar, line.style_solid, 2, false)
+                else if not na(tr.be)
+                    f_line(tr.tEntry, tr.be, x2, tr.be, color.new(cAmar, 30), line.style_dotted, 1, false)
+                // única etiqueta: el grado, a la izquierda de la entrada
+                color col = tr.dir == 1 ? cBull : cBear
+                string tipE = (tr.dir == 1 ? "LONG " : "SHORT ") + str.tostring(tr.tf) + "m" + (tr.esReentrada ? " · reentrada" : "") + f_marcaBias(tr) + " · " + f_hhmm(tr.tEntry) + " · entrada " + f_px(tr.entry) + " · SL " + f_px(tr.sl0) + " · TP " + f_px(tr.tp) + " (" + str.tostring(rr, "#.0") + "R) · BE " + (na(tr.be) ? "—" : f_px(tr.be)) + " · " + str.tostring(tr.ctos, "#") + " ctos · " + tr.grado + " · " + (tr.conf == "" ? "sin confluencias" : tr.conf) + (act ? "" : " · salida " + tr.salida + " @" + f_px(tr.pxExit) + " " + f_signo(tr.r) + "R " + f_hhmm(tr.tExit))
+                f_label(tr.tEntry, tr.entry, tr.grado, label.style_label_right, color.new(col, 0), color.white, szTxtTr, tipE)
 
 // Señales rechazadas: IFVG elegidos como señal que no llegaron a trade (hoy)
 f_dibRechazos() =>
@@ -1668,7 +1688,7 @@ if showPanel and barstate.islast
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
     if panelModo != "Mínimo"
-        table.cell(pnl, 0, 0, "IFVG v1.8", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+        table.cell(pnl, 0, 0, "IFVG v1.9", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
         table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
     string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
