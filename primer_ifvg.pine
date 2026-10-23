@@ -1,6 +1,6 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG DE LA SESIÓN · v1.10 (2026-10-23)
+//  PRIMER IFVG DE LA SESIÓN · v1.11 (2026-10-23)
 //  Plan de Fede ("Teoría 2026") sobre las definiciones ICT / TTrades del
 //  proyecto MNQ Setup Radar. Misma lógica de trading que la v1; cambia el
 //  motor de datos y toda la capa visual.
@@ -71,6 +71,12 @@
 //    con una línea a rayas dentro de cada IFVG (también la zona operada y la
 //    vista previa) y de cada FVG de 15m/1h/4h. Es el mismo nivel cuyo cierre
 //    en contra mata un IFVG.
+//  · GEX (⑬): TradingView no lee cadenas de opciones, así que los niveles se
+//    pegan en un cuadro de texto (call wall, put wall, gamma flip y otros, en
+//    precio de QQQ, NDX o NQ). Se convierten solos a NQ/MNQ con la razón
+//    NQ/QQQ o la diferencia NQ − NDX del último momento en que ambos
+//    cotizaron, se dibujan como líneas y el panel dice si el precio está sobre
+//    el flip (gamma +: rango) o bajo él (gamma −: tendencia).
 //  · Niveles: PDH/PDL, Asia, Londres, pre-market, swings 15m, EQH/EQL.
 //    Swings 5m encendidos por defecto. Los barridos se borran.
 //  · Etiquetas con fondo casi opaco del color del gráfico (legibles en tema
@@ -87,7 +93,7 @@
 //  · La vista previa "en formación" es solo visual: no genera alertas ni
 //    entra en la lógica de trading.
 // ══════════════════════════════════════════════════════════════════════════════
-indicator("Primer IFVG · Fede/ICT · v1.10", shorttitle="IFVG v1.10", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Primer IFVG · Fede/ICT · v1.11", shorttitle="IFVG v1.11", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 TZ = "America/New_York"
 
@@ -224,6 +230,18 @@ const string cfg_panelTexto = "Normal"                         // Tamaño de tex
 const string cfg_panelPos = "Arriba derecha"                   // Posición del panel · opciones: Arriba derecha, Abajo derecha, Arriba izquierda, Abajo izquierda
 const bool cfg_alertasJSON = false                             // Emitir eventos JSON con alert() (programa externo, v2)
 
+// ⑬ GEX · niveles de opciones
+const bool cfg_gexOn = true                                    // Mostrar niveles GEX
+const string cfg_gexFuente = "QQQ"                             // Los niveles pegados están en precio de · opciones: QQQ, NDX, NQ
+const string cfg_gexTexto = ""                                 // Niveles (pegar aquí) · ej.: Call wall 760, Put wall 740, Flip 750.5
+const string cfg_gexAjuste = "Automático"                      // Conversión a NQ · opciones: Automático, Manual
+const float cfg_gexRatioMan = 41.0                             // razón NQ/QQQ (solo en Manual)
+const float cfg_gexBaseMan = 0.0                               // NQ − NDX en puntos (solo en Manual)
+const color cfg_cGexCall = #e91e63                             // Color call wall
+const color cfg_cGexPut = #00acc1                              // Color put wall
+const color cfg_cGexFlip = #3949ab                             // Color gamma flip
+const color cfg_cGexOtro = #8d8d8d                             // Color otros niveles
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TIPOS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,6 +371,11 @@ type Trade
     bool   esReentrada = false
     string salida = ""
     int    biasEnt = 0   // bias en el momento de la entrada (para marcar trades contra bias / sin bias)
+
+type GexLvl
+    string nombre
+    string tipo     // "CW" call wall · "PW" put wall · "FLIP" gamma flip · "OTRO"
+    float  v        // valor en la fuente (QQQ, NDX o NQ)
 
 type Rechazo
     int    t
@@ -523,6 +546,18 @@ panelTexto    = input.string(cfg_panelTexto, "Tamaño de texto del panel", optio
 panelPos      = input.string(cfg_panelPos, "Posición del panel", options=["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group=g12, display=display.none)
 alertasJSON   = input.bool(cfg_alertasJSON, "Emitir eventos JSON con alert() (programa externo, v2)", group=g12, display=display.none)
 
+g13 = "⑬ GEX · niveles de opciones"
+gexOn       = input.bool(cfg_gexOn, "Mostrar niveles GEX", group=g13, tooltip="Dibuja los niveles de gamma exposure que pegues abajo y agrega la fila GEX al panel. TradingView no puede leer cadenas de opciones: los niveles se sacan de un proveedor o de la calculadora del repositorio.", display=display.none)
+gexFuente   = input.string(cfg_gexFuente, "Los niveles pegados están en precio de", options=["QQQ", "NDX", "NQ"], group=g13, tooltip="QQQ: se multiplican por la razón NQ/QQQ. NDX: se les suma la diferencia NQ − NDX. NQ: se dibujan tal cual (MNQ cotiza igual que NQ).", display=display.none)
+gexTexto    = input.text_area(cfg_gexTexto, "Niveles (pegar aquí)", group=g13, tooltip="Nombre y número, separados por comas o uno por línea. Ej.: Call wall 760, Put wall 740, Flip 750.5, 0DTE 755. Reconoce call wall / CW / resistencia, put wall / PW / soporte y flip / zero gamma / HVL; el resto se dibuja como nivel gris con su nombre. Decimales con punto y sin separador de miles. Números a más de 30% del precio se descartan.", display=display.none)
+gexAjuste   = input.string(cfg_gexAjuste, "Conversión a NQ", options=["Automático", "Manual"], inline="gexm", group=g13, tooltip="Automático: razón NQ/QQQ y diferencia NQ − NDX tomadas del último minuto en que el futuro y QQQ/NDX cotizaron a la vez (horario regular). Manual: usa los dos números de esta línea.", display=display.none)
+gexRatioMan = input.float(cfg_gexRatioMan, "razón NQ/QQQ", step=0.01, inline="gexm", group=g13, display=display.none)
+gexBaseMan  = input.float(cfg_gexBaseMan, "NQ − NDX", step=0.25, inline="gexm", group=g13, display=display.none)
+cGexCall    = input.color(cfg_cGexCall, "Call wall", inline="gexc", group=g13, display=display.none)
+cGexPut     = input.color(cfg_cGexPut, "Put wall", inline="gexc", group=g13, display=display.none)
+cGexFlip    = input.color(cfg_cGexFlip, "Flip", inline="gexc", group=g13, display=display.none)
+cGexOtro    = input.color(cfg_cGexOtro, "Otros", inline="gexc", group=g13, display=display.none)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // COLORES · HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -612,6 +647,20 @@ new15   = ta.change(time("15")) != 0
 new60   = ta.change(time("60")) != 0
 esUnMin = timeframe.isminutes and timeframe.multiplier == 1
 tfOk    = timeframe.isminutes
+
+// GEX: QQQ y NDX solo cuando cotizan (horario regular, gaps_on). La razón NQ/QQQ y la diferencia NQ − NDX
+// quedan fijas en el último minuto en que ambos cotizaron a la vez; de noche se usa la del cierre.
+qqqC = request.security(ticker.new("NASDAQ", "QQQ", session.regular), timeframe.period, close, gaps=barmerge.gaps_on)
+ndxC = request.security(ticker.new("NASDAQ", "NDX", session.regular), timeframe.period, close, gaps=barmerge.gaps_on)
+var float gexRatioViva = na
+var float gexBaseViva  = na
+if not na(qqqC) and qqqC > 0
+    gexRatioViva := close / qqqC
+if not na(ndxC)
+    gexBaseViva := close - ndxC
+gexRatio = gexAjuste == "Manual" ? gexRatioMan : gexRatioViva
+gexBase  = gexAjuste == "Manual" ? gexBaseMan : gexBaseViva
+gexPanel = gexOn and str.length(gexTexto) > 0
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NIVELES DE LIQUIDEZ (solo datos; se dibujan al final)
@@ -1433,6 +1482,58 @@ f_label(int x, float y, string txt, string style, color bg, color txtc, string s
     label lb = label.new(x, y, txt, xloc=xloc.bar_time, style=style, color=bg, textcolor=txtc, size=sz, tooltip=tip)
     array.push(dLabels, lb)
 
+// GEX: lee "nombre número" separados por comas, punto y coma o saltos de línea.
+// El número es el último token numérico de cada parte; el resto es el nombre. Si una parte trae solo
+// el nombre (formato "Call Resistance, 760, HVL, 750"), ese nombre pasa al número que sigue.
+f_gexParse(string txt) =>
+    array<GexLvl> out = array.new<GexLvl>()
+    string pend = ""
+    string t = str.replace_all(str.replace_all(str.replace_all(txt, "\n", ","), ";", ","), "|", ",")
+    array<string> partes = str.split(t, ",")
+    for parte in partes
+        array<string> toks = str.split(str.replace_all(str.replace_all(parte, ":", " "), "=", " "), " ")
+        float v = na
+        string nombre = ""
+        for tk in toks
+            if tk != ""
+                float x = str.tonumber(tk)
+                if not na(x)
+                    v := x
+                else
+                    nombre := nombre == "" ? tk : nombre + " " + tk
+        if na(v) and nombre != ""
+            pend := nombre
+        if not na(v)
+            if nombre == "" and pend != ""
+                nombre := pend
+            pend := ""
+            string up = str.upper(nombre)
+            string tipo = str.contains(up, "CALL") or up == "CW" or str.contains(up, "RESIST") ? "CW" : str.contains(up, "PUT") or up == "PW" or str.contains(up, "SOPORTE") or str.contains(up, "SUPPORT") ? "PW" : str.contains(up, "FLIP") or str.contains(up, "ZERO") or str.contains(up, "CERO") or str.contains(up, "HVL") or up == "ZG" ? "FLIP" : "OTRO"
+            array.push(out, GexLvl.new(nombre == "" ? "GEX" : nombre, tipo, v))
+    out
+
+// Nivel en precio de NQ/MNQ según la fuente
+f_gexANQ(float v) =>
+    float p = gexFuente == "QQQ" ? v * gexRatio : gexFuente == "NDX" ? v + gexBase : v
+    // un número a más de 30% del precio no es un nivel (p. ej. el "1" de "GEX 1"): se descarta
+    na(p) or math.abs(p - close) > 0.3 * close ? na : p
+
+f_gexNombre(GexLvl g) => g.tipo == "CW" ? "Call wall" : g.tipo == "PW" ? "Put wall" : g.tipo == "FLIP" ? "Gamma flip" : g.nombre
+
+// GEX: líneas desde el inicio del día de trading, extendidas a la derecha, con etiqueta a la derecha del precio
+f_dibGEX(int tNow) =>
+    array<GexLvl> lv = f_gexParse(gexTexto)
+    int x1 = math.max(D.dayStart, tNow - 86400000)
+    int xL = tNow + 6 * timeframe.multiplier * 60000
+    for g in lv
+        float p = f_gexANQ(g.v)
+        if not na(p)
+            color col = g.tipo == "CW" ? cGexCall : g.tipo == "PW" ? cGexPut : g.tipo == "FLIP" ? cGexFlip : cGexOtro
+            string st = g.tipo == "FLIP" ? line.style_dashed : g.tipo == "OTRO" ? line.style_dotted : line.style_solid
+            f_line(x1, p, tNow, p, color.new(col, g.tipo == "OTRO" ? 30 : 0), st, g.tipo == "OTRO" ? 1 : 2, true)
+            string conv = gexFuente == "QQQ" ? " = " + gexFuente + " " + str.tostring(g.v) + " × " + str.tostring(gexRatio, "#.####") : gexFuente == "NDX" ? " = NDX " + str.tostring(g.v) + " + " + f_px(gexBase) : ""
+            f_label(xL, p, "GEX " + f_gexNombre(g) + " " + f_px(p), label.style_label_left, cEtiqBg, col, szTxt, "GEX " + f_gexNombre(g) + " @" + f_px(p) + conv)
+
 // ¿Se dibuja el trade i (de n)? Según "Trades a mostrar" (①), siempre dentro de los últimos N.
 // El trade activo, si lo hay, es siempre el último del array (no se abre otro mientras está activo).
 f_trVis(Trade tr, int i, int n) =>
@@ -1772,6 +1873,8 @@ if barstate.islast and tfOk
     f_dibIFVG(time_close)
     f_dibCISD()
     f_dibNiveles(close, time_close)
+    if gexOn
+        f_dibGEX(time_close)
     if showSweepLbl
         f_dibBarridos()
     f_dibTrades(time_close)
@@ -1820,12 +1923,12 @@ f_gradoAhora(int dir, int tc, float c) =>
 f_txtBarrido(int d, bool hay, string txt) => hay ? txt + " ✓" : "sin barrido " + (d == 1 ? "SSL" : "BSL") + " en " + str.tostring(minBarrido) + " min ✗"
 
 if showPanel and barstate.islast
-    var table pnl = table.new(f_pos(panelPos), 2, panelModo == "Mínimo" ? 3 : panelModo == "Compacto" ? 9 : 15, bgcolor=color.new(cFondo, 10), border_width=1, border_color=color.new(cTexto, 85))
+    var table pnl = table.new(f_pos(panelPos), 2, (panelModo == "Mínimo" ? 3 : panelModo == "Compacto" ? 9 : 15) + (gexPanel ? 1 : 0), bgcolor=color.new(cFondo, 10), border_width=1, border_color=color.new(cTexto, 85))
     string tfTxt = timeframe.period + (timeframe.isminutes ? "m" : "")
     string aviso = not tfOk ? "⚠ solo gráficos en minutos" : timeframe.multiplier > 5 ? "⚠ TF > 5m" : ""
     string tzCorto = tzPanel == "America/Santiago" ? "Santiago" : tzPanel == "America/New_York" ? "NY" : tzPanel == "America/Chicago" ? "Chicago" : tzPanel == "Europe/Madrid" ? "Madrid" : tzPanel
     if panelModo != "Mínimo"
-        table.cell(pnl, 0, 0, "IFVG v1.10", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
+        table.cell(pnl, 0, 0, "IFVG v1.11", text_color=cTexto, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
         table.cell(pnl, 1, 0, syminfo.ticker + " " + tfTxt + " · hora " + tzCorto + (aviso == "" ? "" : " · " + aviso), text_color=aviso == "" ? color.new(cTexto, 35) : color.orange, text_size=szPanel, text_halign=text.align_left, bgcolor=color.new(cTexto, 90))
     // bias
     string sBias = (bias == 1 ? "ALCISTA" : bias == -1 ? "BAJISTA" : "SIN BIAS") + (biasMode == "Auto" ? " (auto)" : " (manual)") + (biasMode == "Auto" and eqInval ? " · invalidado por EQ" : "") + (biasFiltra or biasMode == "Sin operar" ? "" : " · no filtra los trades")
@@ -1915,11 +2018,37 @@ if showPanel and barstate.islast
     color cVenTxt = ventanaAbierta ? cAmar : color.new(cTexto, 35)
     color cGr = gradoEsMotivo or gradoAviso or (not puedeOperar and not act) ? color.new(cTexto, 35) : f_colorGrado(gradoLetra)
     color cForm = sForm == "—" ? color.new(cTexto, 35) : cAmar
+    // GEX: régimen respecto del gamma flip y paredes, ya en precio de NQ/MNQ
+    string sGex = "—"
+    color cGex = color.new(cTexto, 35)
+    if gexPanel
+        array<GexLvl> lvG = f_gexParse(gexTexto)
+        float pFlip = na
+        float pCW = na
+        float pPW = na
+        for g in lvG
+            float pg = f_gexANQ(g.v)
+            if g.tipo == "FLIP" and na(pFlip)
+                pFlip := pg
+            else if g.tipo == "CW" and na(pCW)
+                pCW := pg
+            else if g.tipo == "PW" and na(pPW)
+                pPW := pg
+        bool sinConv = gexFuente == "QQQ" ? na(gexRatio) : gexFuente == "NDX" ? na(gexBase) : false
+        if array.size(lvG) == 0
+            sGex := "no reconocí niveles en el texto pegado (nombre y número, separados por comas)"
+        else if sinConv
+            sGex := "falta el precio de " + gexFuente + " para convertir: espera al horario regular o usa la conversión manual"
+        else
+            sGex := (na(pFlip) ? "sin gamma flip" : close >= pFlip ? "sobre el flip " + f_px(pFlip) + ": gamma + (rango, reversión)" : "bajo el flip " + f_px(pFlip) + ": gamma − (tendencia, más volatilidad)") + (na(pCW) ? "" : " · call wall " + f_px(pCW)) + (na(pPW) ? "" : " · put wall " + f_px(pPW))
+            cGex := na(pFlip) ? cTexto : close >= pFlip ? cTexto : color.orange
     if panelModo == "Mínimo"
         f_fila(pnl, 0, "Confluencias", sConf, cTexto)
         // sin cabecera: el aviso de temporalidad no soportada va delante del grado
         f_fila(pnl, 1, "Grado", aviso == "" ? sGrado : aviso + " · " + sGrado, aviso == "" ? cGr : color.orange)
         f_fila(pnl, 2, "Trade", sTr, cTexto)
+        if gexPanel
+            f_fila(pnl, 3, "GEX", sGex, cGex)
     else if panelModo == "Compacto"
         f_fila(pnl, 1, "Bias", sBias + " · " + sLec, cBiasTxt)
         f_fila(pnl, 2, "Ventana", sVen, cVenTxt)
@@ -1929,6 +2058,8 @@ if showPanel and barstate.islast
         f_fila(pnl, 6, "Grado", sGrado, cGr)
         f_fila(pnl, 7, "Trade", sTr, cTexto)
         f_fila(pnl, 8, "Día", sDia, cTexto)
+        if gexPanel
+            f_fila(pnl, 9, "GEX", sGex, cGex)
     else
         f_fila(pnl, 1, "Bias", sBias, cBiasTxt)
         f_fila(pnl, 2, "Lecturas", sLec, cTexto)
@@ -1944,3 +2075,5 @@ if showPanel and barstate.islast
         f_fila(pnl, 12, "Día", sDia, cTexto)
         f_fila(pnl, 13, "Riesgo", sRk, color.new(cTexto, 35))
         f_fila(pnl, 14, "Leyenda", "IFVG/CISD/trades: paleta de señal · punteado sin relleno = en formación (vela abierta) · línea interior = CE 50% · FVG 15m/1h/4h: paleta de contexto, contorno más oscuro cuanto mayor la TF · PDH/PDL ámbar · sesiones azul · swings gris · EQ violeta", color.new(cTexto, 50))
+        if gexPanel
+            f_fila(pnl, 15, "GEX", sGex, cGex)
