@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using NinjaTrader.NinjaScript.Indicators.PrimerIFVGNucleo;
+using PrimerIFVGNucleo;
 
 static class Pruebas
 {

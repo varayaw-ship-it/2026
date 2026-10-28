@@ -253,7 +253,7 @@ namespace NinjaTrader.NinjaScript.DrawingTools
     using NinjaTrader.Gui.Tools;
 
     public enum TextPosition { BottomLeft, BottomRight, Center, TopLeft, TopRight }
-    public abstract class DrawingTool { public bool IsLocked { get; set; } }
+    public abstract class DrawingTool { public bool IsLocked { get; set; } public bool IsAutoScale { get; set; } }
     public abstract class ShapeBase : DrawingTool { public Stroke OutlineStroke { get; set; } }
     public class Rectangle : ShapeBase { }
     public class Line : DrawingTool { }
@@ -265,7 +265,8 @@ namespace NinjaTrader.NinjaScript.DrawingTools
     {
         public static Rectangle Rectangle(NinjaScriptBase owner, string tag, bool isAutoScale, DateTime startTime, double startY, DateTime endTime, double endY, Brush brush, Brush areaBrush, int areaOpacity) { return new Rectangle(); }
         public static Line Line(NinjaScriptBase owner, string tag, bool isAutoScale, DateTime startTime, double startY, DateTime endTime, double endY, Brush brush, DashStyleHelper dashStyle, int width) { return new Line(); }
-        public static Ray Ray(NinjaScriptBase owner, string tag, bool isAutoScale, DateTime startTime, double startY, DateTime endTime, double endY, Brush brush, DashStyleHelper dashStyle, int width) { return new Ray(); }
+        public static Ray Ray(NinjaScriptBase owner, string tag, bool isAutoScale, int startBarsAgo, double startY, int endBarsAgo, double endY, Brush brush, DashStyleHelper dashStyle, int width) { return new Ray(); }
+        public static Ray Ray(NinjaScriptBase owner, string tag, DateTime startTime, double startY, DateTime endTime, double endY, Brush brush, DashStyleHelper dashStyle, int width) { return new Ray(); }
         public static Text Text(NinjaScriptBase owner, string tag, bool isAutoScale, string text, DateTime time, double y, int yPixelOffset, Brush textBrush, SimpleFont font, TextAlignment alignment, Brush outlineBrush, Brush areaBrush, int areaOpacity) { return new Text(); }
         public static TextFixed TextFixed(NinjaScriptBase owner, string tag, string text, TextPosition textPosition, Brush textBrush, SimpleFont font, Brush outlineBrush, Brush areaBrush, int areaOpacity) { return new TextFixed(); }
     }

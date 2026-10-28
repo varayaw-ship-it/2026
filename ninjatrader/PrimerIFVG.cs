@@ -1,5 +1,5 @@
 ﻿// ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG · NinjaTrader 8 · v0.1 (2026-10-28)
+//  PRIMER IFVG · NinjaTrader 8 · v0.2 (2026-10-28)
 //  Versión para NinjaTrader del indicador "Primer IFVG" de TradingView (núcleo):
 //  IFVG de 1–5m con vista previa punteada, CISD, FVG de 15m/1h/4h con su CE,
 //  niveles de liquidez y niveles GEX de QQQ descargados solos de CBOE.
@@ -47,11 +47,817 @@ using NinjaTrader.Gui.Tools;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
-using NinjaTrader.NinjaScript.Indicators.PrimerIFVGNucleo;
+using PrimerIFVGNucleo;
 #endregion
 
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+    public class PrimerIFVG : Indicator
+    {
+        // ── estado ──────────────────────────────────────────────────────────
+        Motor motor;
+        readonly object motorLock = new object();     // el motor se alimenta en el hilo de datos y se lee en el de dibujo
+        TimeZoneInfo tzNy, tzLocal;
+        DateTime ultimo1m = DateTime.MinValue;
+        readonly object gexLock = new object();
+        GexResultado gexRes;
+        string gexError;
+        bool reintentar;
+        volatile bool gexDescargando;
+        DateTime proximaDescargaUtc = DateTime.MinValue;
+        double gexRazon = double.NaN;
+        DateTime gexHora;
+        GexResultado gexResAplicado;
+        double precioPrevio = double.NaN;
+        readonly Dictionary<string, DateTime> ultimoAvisoGex = new Dictionary<string, DateTime>();
+        HashSet<string> tagsPrevios = new HashSet<string>(), tagsAhora = new HashSet<string>();
+        SimpleFont fuente;
+        TimeSpan barra = TimeSpan.FromMinutes(1);       // duración de la vela del gráfico
+        // etiquetas pegadas al borde derecho del gráfico (niveles, GEX, FVG 15m/1h/4h), dibujadas en OnRender
+        class EtiquetaDer { public double P; public string Texto; public Brush Color; public bool Arriba; }
+        List<EtiquetaDer> etiquetasNuevas = new List<EtiquetaDer>();
+        volatile List<EtiquetaDer> etiquetasDerecha = new List<EtiquetaDer>();
+        System.Windows.Threading.DispatcherTimer timer;
+        NinjaTrader.Gui.Chart.Chart chartWindow;
+        readonly List<System.Windows.Controls.Button> botones = new List<System.Windows.Controls.Button>();
+        bool botonesVisibles;
+        static readonly SolidColorBrush bOn = Congelar(Color.FromRgb(38, 120, 110)), bOff = Congelar(Color.FromRgb(90, 90, 90));
+        static readonly SolidColorBrush cPd = Congelar(Color.FromRgb(255, 179, 0)), cSes = Congelar(Color.FromRgb(66, 165, 245)),
+                                        cSw = Congelar(Color.FromRgb(158, 158, 158)), cEq = Congelar(Color.FromRgb(171, 71, 188));
+
+        static SolidColorBrush Congelar(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+
+        static SolidColorBrush ConOpacidad(Brush b, int opacidad)
+        {
+            Color c = b is SolidColorBrush ? ((SolidColorBrush)b).Color : Colors.Gray;
+            return Congelar(Color.FromArgb((byte)Math.Max(0, Math.Min(255, opacidad * 255 / 100)), c.R, c.G, c.B));
+        }
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Description = "Primer IFVG: IFVG 1–5m con vista previa, CISD, FVG 15m/1h/4h con CE, niveles de liquidez y GEX de QQQ.";
+                Name = "PrimerIFVG";
+                Calculate = Calculate.OnPriceChange;
+                IsOverlay = true;
+                DisplayInDataBox = false;
+                DrawOnPricePanel = true;
+                PaintPriceMarkers = false;
+                IsSuspendedWhileInactive = false;
+                ScaleJustification = NinjaTrader.Gui.Chart.ScaleJustification.Right;
+
+                MostrarIFVG = true; MostrarCISD = true; MostrarHTF = true; MostrarNiveles = true; MostrarGEX = true; Sonido = true;
+
+                Usar1m = true; Usar2m = true; Usar3m = true; Usar4m = true; Usar5m = true;
+                FvgMinTicks = 0; MaxVelasInv = 60; LimiteEnMinutos = false; MaxMinutosInv = 60; VelasPivote = 2;
+
+                VistaPrevia = true; MostrarMuertos = false; OcultarIfvgMinutos = 0; DedupMinutos = 10; DedupPuntos = 2;
+                MarcarCE = true; TamanoTexto = 10;
+                ColorIfvgAlcista = Congelar(Color.FromRgb(0x26, 0xA6, 0x9A));
+                ColorIfvgBajista = Congelar(Color.FromRgb(0xEF, 0x53, 0x50));
+
+                Usar15m = true; Usar1h = true; Usar4h = true; HtfCercanos = 3; HtfOpacidadRelleno = 7;
+                ColorHtfAlcista = Congelar(Color.FromRgb(0x1B, 0x5E, 0x20));
+                ColorHtfBajista = Congelar(Color.FromRgb(0x80, 0x19, 0x22));
+                ColorContorno = Brushes.Black;
+                Contorno15m = 20; Contorno1h = 45; Contorno4h = 75; CeEnHtf = true;
+
+                MostrarPdhPdl = true; MostrarSesiones = true; MostrarSwings15 = true; MostrarSwings5 = true; EtiquetasNiveles = 3;
+                SesionAsia = "1900-0100"; SesionLondres = "0200-0600"; SesionPremarket = "0700-0930";
+
+                GexMinutos = 15; GexMaxDias = 45; GexStrikesExtra = 3; GexRazonManual = 0;
+                ColorCallWall = Congelar(Color.FromRgb(0xE9, 0x1E, 0x63));
+                ColorPutWall = Congelar(Color.FromRgb(0x00, 0xAC, 0xC1));
+                ColorFlip = Congelar(Color.FromRgb(0x39, 0x49, 0xAB));
+                ColorGexOtros = Brushes.Gray;
+
+                SonidoIfvg = "Alert2.wav"; SonidoGex = "Alert4.wav"; MinutosEntreAvisosGex = 5;
+            }
+            else if (State == State.Configure)
+            {
+                AddDataSeries(BarsPeriodType.Minute, 1);
+            }
+            else if (State == State.DataLoaded)
+            {
+                tzNy = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+                tzLocal = Core.Globals.GeneralOptions.TimeZoneInfo;
+                var cfg = new ConfigMotor
+                {
+                    VelasPivote = VelasPivote,
+                    FvgMinPuntos = FvgMinTicks * TickSize,
+                    MaxVelasInv = MaxVelasInv,
+                    LimiteEnMinutos = LimiteEnMinutos,
+                    MaxMinutosInv = MaxMinutosInv
+                };
+                int a, b;
+                if (Utiles.LeerSesion(SesionAsia, out a, out b)) { cfg.AsiaIni = a; cfg.AsiaFin = b; }
+                if (Utiles.LeerSesion(SesionLondres, out a, out b)) { cfg.LonIni = a; cfg.LonFin = b; }
+                if (Utiles.LeerSesion(SesionPremarket, out a, out b)) { cfg.PmIni = a; cfg.PmFin = b; }
+                motor = new Motor(cfg);
+                fuente = new SimpleFont("Arial", TamanoTexto);
+                if (BarsPeriod.BarsPeriodType == BarsPeriodType.Second) barra = TimeSpan.FromSeconds(BarsPeriod.Value);
+                else if (BarsPeriod.BarsPeriodType == BarsPeriodType.Minute) barra = TimeSpan.FromMinutes(BarsPeriod.Value);
+            }
+            else if (State == State.Historical)
+            {
+                if (ChartControl != null) ChartControl.Dispatcher.InvokeAsync(CrearBotones);
+            }
+            else if (State == State.Realtime)
+            {
+                if (ChartControl != null)
+                    ChartControl.Dispatcher.InvokeAsync(() =>
+                    {
+                        timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+                        timer.Tick += (s, e) => Tick();
+                        timer.Start();
+                    });
+            }
+            else if (State == State.Terminated)
+            {
+                if (ChartControl != null)
+                    ChartControl.Dispatcher.InvokeAsync(() =>
+                    {
+                        if (timer != null) { timer.Stop(); timer = null; }
+                        QuitarBotones();
+                    });
+            }
+        }
+
+        // ── datos ───────────────────────────────────────────────────────────
+
+        DateTime ANy(DateTime local)
+        {
+            try { return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), tzLocal, tzNy); }
+            catch (ArgumentException) { return local; }
+        }
+
+        DateTime ALocal(DateTime ny)
+        {
+            try { return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(ny, DateTimeKind.Unspecified), tzNy, tzLocal); }
+            catch (ArgumentException) { return ny; }
+        }
+
+        bool[] TfOn() { return new[] { false, Usar1m, Usar2m, Usar3m, Usar4m, Usar5m }; }
+
+        protected override void OnBarUpdate()
+        {
+            if (motor == null) return;
+            if (BarsInProgress == 1)
+            {
+                // vela de 1 minuto cerrada: en histórico es la [0]; en tiempo real, la [1] en el primer tick de la siguiente
+                int idx = State == State.Historical ? 0 : (IsFirstTickOfBar ? 1 : -1);
+                if (idx < 0 || CurrentBars[1] < idx) return;
+                DateTime tcLocal = Times[1][idx];
+                // la vela en curso al cargar el gráfico todavía no cerró: se procesa en tiempo real
+                if (tcLocal <= ultimo1m || (State == State.Historical && tcLocal > Core.Globals.Now)) return;
+                ultimo1m = tcLocal;
+                DateTime tcNy = ANy(tcLocal);
+                List<Fvg> nuevos;
+                lock (motorLock)
+                {
+                    motor.ProcesarMinuto(tcNy.AddMinutes(-1), tcNy, Opens[1][idx], Highs[1][idx], Lows[1][idx], Closes[1][idx]);
+                    nuevos = new List<Fvg>(motor.NuevosIfvg);
+                    motor.DescartarEventos();
+                }
+                if (State == State.Realtime) AvisarIfvg(nuevos);
+                return;
+            }
+            if (BarsInProgress == 0 && State == State.Realtime)
+                AvisarGex(Closes[0][0]);
+        }
+
+        // ── sonido ──────────────────────────────────────────────────────────
+
+        // nombre de un .wav de la carpeta sounds de NinjaTrader, o una ruta completa
+        static string RutaSonido(string archivo)
+        {
+            return System.IO.Path.IsPathRooted(archivo) ? archivo : System.IO.Path.Combine(Core.Globals.InstallDir, "sounds", archivo);
+        }
+
+        void AvisarIfvg(List<Fvg> nuevos)
+        {
+            if (!Sonido) return;
+            bool[] on = TfOn();
+            foreach (Fvg f in nuevos)
+            {
+                if (f.Tf < 3 || !on[f.Tf]) continue;
+                int dirI = -f.Dir;
+                Alert("PIFVG_ifvg_" + f.Id, Priority.Medium,
+                      string.Format(CultureInfo.InvariantCulture, "IFVG {0}m {1} · {2:0.00}–{3:0.00}", f.Tf, dirI == 1 ? "alcista" : "bajista", f.Bot, f.Top),
+                      RutaSonido(SonidoIfvg), 0, Brushes.Black, dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista);
+            }
+        }
+
+        void AvisarGex(double precio)
+        {
+            double prev = precioPrevio;
+            precioPrevio = precio;
+            if (!Sonido || !MostrarGEX || double.IsNaN(prev) || gexResAplicado == null || double.IsNaN(gexRazon)) return;
+            var niveles = new List<KeyValuePair<string, double>>
+            {
+                new KeyValuePair<string, double>("Call wall", gexResAplicado.CallWall * gexRazon),
+                new KeyValuePair<string, double>("Put wall", gexResAplicado.PutWall * gexRazon)
+            };
+            if (!double.IsNaN(gexResAplicado.Flip)) niveles.Add(new KeyValuePair<string, double>("Gamma flip", gexResAplicado.Flip * gexRazon));
+            foreach (KeyValuePair<string, double> kv in niveles)
+            {
+                double lvl = kv.Value;
+                bool cruza = (prev < lvl && precio >= lvl) || (prev > lvl && precio <= lvl);
+                if (!cruza) continue;
+                DateTime ult;
+                if (ultimoAvisoGex.TryGetValue(kv.Key, out ult) && (DateTime.Now - ult).TotalMinutes < MinutosEntreAvisosGex) continue;
+                ultimoAvisoGex[kv.Key] = DateTime.Now;
+                Alert("PIFVG_gex_" + kv.Key, Priority.Medium,
+                      string.Format(CultureInfo.InvariantCulture, "GEX {0} {1:0.00} tocado", kv.Key, lvl),
+                      RutaSonido(SonidoGex), 0, Brushes.Black, Brushes.Orange);
+            }
+        }
+
+        // ── GEX: descarga en segundo plano ──────────────────────────────────
+
+        void DescargarGexSiToca()
+        {
+            lock (gexLock)
+                if (reintentar) { reintentar = false; proximaDescargaUtc = DateTime.UtcNow.AddMinutes(2); }
+            if (!MostrarGEX || gexDescargando || DateTime.UtcNow < proximaDescargaUtc) return;
+            gexDescargando = true;
+            proximaDescargaUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, GexMinutos));
+            DateTime ahoraUtc = DateTime.UtcNow;
+            TimeZoneInfo tz = tzNy;
+            double maxDias = GexMaxDias;
+            int extra = GexStrikesExtra;
+            Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+                    string json;
+                    using (var wc = new WebClient())
+                    {
+                        wc.Headers.Add("User-Agent", "Mozilla/5.0");
+                        json = wc.DownloadString("https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json");
+                    }
+                    var ops = new List<GexOpcion>();
+                    double spot = GexCalc.Leer(json, ahoraUtc, tz, maxDias, ops);
+                    GexResultado res = GexCalc.Calcular(spot, ops, 0.04, 0.006, extra);
+                    res.Calculado = TimeZoneInfo.ConvertTimeFromUtc(ahoraUtc, tz);
+                    lock (gexLock) { gexRes = res; gexError = null; }
+                }
+                catch (Exception ex)
+                {
+                    lock (gexLock) { gexError = ex.Message; reintentar = true; }
+                }
+                finally
+                {
+                    gexDescargando = false;
+                }
+            });
+        }
+
+        // Razón NQ/QQQ: con el precio de NQ de hace 15 minutos en horario regular (CBOE trae QQQ con ese retraso);
+        // fuera de horario, con el NQ de las 16:00 NY de la última sesión.
+        void AplicarGex()
+        {
+            GexResultado res;
+            lock (gexLock) res = gexRes;
+            if (res == null || ReferenceEquals(res, gexResAplicado)) return;
+            gexResAplicado = res;
+            if (GexRazonManual > 0) { gexRazon = GexRazonManual; gexHora = res.Calculado; return; }
+            DateTime refNy = res.Calculado.AddMinutes(-15);
+            int m = refNy.Hour * 60 + refNy.Minute;
+            bool habil = refNy.DayOfWeek != DayOfWeek.Saturday && refNy.DayOfWeek != DayOfWeek.Sunday;
+            if (!(habil && m >= 570 && m <= 960))
+            {
+                DateTime d = m < 570 ? refNy.Date.AddDays(-1) : refNy.Date;
+                while (d.DayOfWeek == DayOfWeek.Saturday || d.DayOfWeek == DayOfWeek.Sunday) d = d.AddDays(-1);
+                refNy = d.AddHours(16);
+            }
+            int idx = BarsArray[1].GetBar(ALocal(refNy));
+            double nq = idx >= 0 ? BarsArray[1].GetClose(idx) : Closes[1][0];
+            gexRazon = nq / res.Spot;
+            gexHora = refNy;
+        }
+
+        // ── botones del gráfico ─────────────────────────────────────────────
+
+        void CrearBotones()
+        {
+            chartWindow = Window.GetWindow(ChartControl.Parent) as NinjaTrader.Gui.Chart.Chart;
+            if (chartWindow == null) return;
+            string[] nombres = { "IFVG", "CISD", "FVG HTF", "Niveles", "GEX", "Sonido" };
+            for (int i = 0; i < nombres.Length; i++)
+            {
+                int k = i;
+                var b = new System.Windows.Controls.Button { Content = nombres[i], Margin = new Thickness(2, 0, 2, 0), Padding = new Thickness(6, 1, 6, 1), Foreground = Brushes.White, FontSize = 11 };
+                b.Click += (s, e) => { Alternar(k); PintarBoton(b, Estado(k)); Redibujar(); };
+                PintarBoton(b, Estado(k));
+                botones.Add(b);
+            }
+            if (TabSeleccionada()) MostrarBotones();
+            chartWindow.MainTabControl.SelectionChanged += CambioDePestana;
+        }
+
+        bool Estado(int k)
+        {
+            switch (k)
+            {
+                case 0: return MostrarIFVG;
+                case 1: return MostrarCISD;
+                case 2: return MostrarHTF;
+                case 3: return MostrarNiveles;
+                case 4: return MostrarGEX;
+                default: return Sonido;
+            }
+        }
+
+        void Alternar(int k)
+        {
+            switch (k)
+            {
+                case 0: MostrarIFVG = !MostrarIFVG; break;
+                case 1: MostrarCISD = !MostrarCISD; break;
+                case 2: MostrarHTF = !MostrarHTF; break;
+                case 3: MostrarNiveles = !MostrarNiveles; break;
+                case 4: MostrarGEX = !MostrarGEX; break;
+                default: Sonido = !Sonido; break;
+            }
+        }
+
+        static void PintarBoton(System.Windows.Controls.Button b, bool on) { b.Background = on ? bOn : bOff; b.Opacity = on ? 1.0 : 0.6; }
+
+        void MostrarBotones()
+        {
+            if (botonesVisibles || chartWindow == null) return;
+            foreach (System.Windows.Controls.Button b in botones) chartWindow.MainMenu.Add(b);
+            botonesVisibles = true;
+        }
+
+        void OcultarBotones()
+        {
+            if (!botonesVisibles || chartWindow == null) return;
+            foreach (System.Windows.Controls.Button b in botones) chartWindow.MainMenu.Remove(b);
+            botonesVisibles = false;
+        }
+
+        void QuitarBotones()
+        {
+            OcultarBotones();
+            if (chartWindow != null) chartWindow.MainTabControl.SelectionChanged -= CambioDePestana;
+            botones.Clear();
+        }
+
+        bool TabSeleccionada()
+        {
+            foreach (System.Windows.Controls.TabItem tab in chartWindow.MainTabControl.Items)
+            {
+                var ct = tab.Content as ChartTab;
+                if (ct != null && ct.ChartControl == ChartControl && tab == chartWindow.MainTabControl.SelectedItem) return true;
+            }
+            return false;
+        }
+
+        void CambioDePestana(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (e.AddedItems.Count <= 0 || !(e.AddedItems[0] is System.Windows.Controls.TabItem)) return;
+            if (TabSeleccionada()) MostrarBotones(); else OcultarBotones();
+        }
+
+        // ── dibujo ──────────────────────────────────────────────────────────
+
+        void Tick()
+        {
+            if (State != State.Realtime) { if (timer != null) { timer.Stop(); timer = null; } return; }
+            DescargarGexSiToca();
+            Redibujar();
+        }
+
+        void Redibujar()
+        {
+            if (State != State.Realtime) return;
+            TriggerCustomEvent(o =>
+            {
+                try { Dibujar(); }
+                catch (Exception ex) { Print("PrimerIFVG: " + ex.Message); }
+            }, 0, null);
+            ForceRefresh();
+        }
+
+        Brush TextoGrafico { get { return ChartControl != null && ChartControl.Properties != null ? ChartControl.Properties.ChartText : Brushes.Gray; } }
+
+        void Caja(string tag, DateTime t1Ny, double top, DateTime t2Ny, double bot, Brush borde, Brush relleno, int opRelleno, DashStyleHelper estilo, int ancho)
+        {
+            Rectangle r = Draw.Rectangle(this, tag, false, ALocal(t1Ny), top, ALocal(t2Ny), bot, borde, relleno, opRelleno);
+            r.OutlineStroke = new Stroke(borde, estilo, ancho);
+            r.IsLocked = true;
+            tagsAhora.Add(tag);
+        }
+
+        void Linea(string tag, DateTime t1Ny, DateTime t2Ny, double y, Brush color, DashStyleHelper estilo, int ancho, bool extender)
+        {
+            if (extender) Draw.Ray(this, tag, ALocal(t1Ny), y, ALocal(t2Ny), y, color, estilo, ancho).IsAutoScale = false;
+            else Draw.Line(this, tag, false, ALocal(t1Ny), y, ALocal(t2Ny), y, color, estilo, ancho);
+            tagsAhora.Add(tag);
+        }
+
+        void Texto(string tag, DateTime tNy, double y, string txt, Brush color, int offset)
+        {
+            Draw.Text(this, tag, false, txt, ALocal(tNy), y, offset, color, fuente, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+            tagsAhora.Add(tag);
+        }
+
+        void Etiqueta(double p, string txt, Brush color, bool arriba)
+        {
+            etiquetasNuevas.Add(new EtiquetaDer { P = p, Texto = txt, Color = color, Arriba = arriba });
+        }
+
+        // Etiquetas al borde derecho, sobre o bajo su precio; si se pisan, se corren hacia abajo.
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            base.OnRender(chartControl, chartScale);
+            List<EtiquetaDer> lista = etiquetasDerecha;
+            if (IsInHitTest || lista == null || lista.Count == 0 || fuente == null) return;
+            using (SharpDX.DirectWrite.TextFormat formato = fuente.ToDirectWriteTextFormat())
+            using (SharpDX.Direct2D1.Brush fondo = chartControl.Properties.ChartBackground.ToDxBrush(RenderTarget))
+            {
+                fondo.Opacity = 0.75f;
+                var filas = new List<KeyValuePair<float, EtiquetaDer>>();
+                foreach (EtiquetaDer e in lista)
+                {
+                    float y = chartScale.GetYByValue(e.P);
+                    filas.Add(new KeyValuePair<float, EtiquetaDer>(e.Arriba ? y - formato.FontSize - 4 : y + 1, e));
+                }
+                float ocupadoHasta = float.MinValue;
+                foreach (KeyValuePair<float, EtiquetaDer> f in filas.OrderBy(x => x.Key))
+                {
+                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Value.Texto, formato, 600, formato.FontSize + 6))
+                    using (SharpDX.Direct2D1.Brush pincel = f.Value.Color.ToDxBrush(RenderTarget))
+                    {
+                        float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
+                        float y = Math.Max(f.Key, ocupadoHasta);
+                        if (y > ChartPanel.Y + ChartPanel.H || y + alto < ChartPanel.Y) continue;
+                        float x = ChartPanel.X + ChartPanel.W - ancho - 6;
+                        RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 2, y, ancho + 4, alto), fondo);
+                        RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, pincel);
+                        ocupadoHasta = y + alto;
+                    }
+                }
+            }
+        }
+
+        static string P(double v) { return v.ToString("0.00", CultureInfo.InvariantCulture); }
+        static string H(DateTime t) { return t.ToString("HH:mm", CultureInfo.InvariantCulture); }
+
+        void Dibujar()
+        {
+            if (motor == null || CurrentBars[0] < 1 || CurrentBars[1] < 1) return;
+            tagsAhora = new HashSet<string>();
+            etiquetasNuevas = new List<EtiquetaDer>();
+            double precio = Closes[0][0];
+            DateTime ahoraNy = ANy(Times[1][0]);                 // cierre de la vela de 1m en curso
+            DateTime tUlt = ahoraNy.AddMinutes(-1);              // su apertura
+            DateTime finNy = ANy(Times[0][0]);
+            bool[] on = TfOn();
+
+            List<Fvg> conf;
+            List<CisdEvento> cisdConf;
+            var prevI = new List<Fvg>();
+            var prevC = new List<CisdEvento>();
+            List<FvgHtf> htf = null;
+            List<Nivel> niveles = null;
+            DateTime diaNy;
+            lock (motorLock)
+            {
+                conf = motor.IfvgCandidatos(ahoraNy, on, MostrarMuertos, OcultarIfvgMinutos);
+                cisdConf = motor.CisdCandidatos(on);
+                if (VistaPrevia) motor.Previa(precio, tUlt, on, DedupMinutos, DedupPuntos, conf, cisdConf, prevI, prevC);
+                if (MostrarHTF) htf = motor.HtfSeleccion(precio, Usar15m, Usar1h, Usar4h, HtfCercanos);
+                if (MostrarNiveles) niveles = motor.Liq.Niveles.Where(L => !L.Oculto && !L.Tomado).ToList();
+                diaNy = motor.DayStart;
+            }
+
+            if (htf != null) DibujarHtf(htf, finNy);
+            if (niveles != null) DibujarNiveles(niveles, precio);
+            if (MostrarIFVG) DibujarIfvg(conf, prevI, tUlt);
+            if (MostrarCISD) DibujarCisd(cisdConf, prevC);
+            AplicarGex();
+            if (MostrarGEX) DibujarGex(precio, finNy, diaNy);
+
+            foreach (string tag in tagsPrevios) if (!tagsAhora.Contains(tag)) RemoveDrawObject(tag);
+            tagsPrevios = tagsAhora;
+            etiquetasDerecha = etiquetasNuevas;
+        }
+
+        void DibujarIfvg(List<Fvg> conf, List<Fvg> previa, DateTime tUlt)
+        {
+            foreach (Fvg f in conf)
+            {
+                if (Motor.TapadoIfvg(f, f.TInv, conf, g => g.TInv, DedupMinutos)) continue;
+                int dirI = -f.Dir;
+                bool vivo = f.Estado == 1;
+                Brush col = vivo ? (dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista) : Brushes.Gray;
+                Caja("PIFVG_i" + f.Id, f.TBirth, f.Top, f.TcInv, f.Bot, ConOpacidad(col, 65), col, 14, DashStyleHelper.Solid, 1);
+                Texto("PIFVG_it" + f.Id, f.TcInv, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m", col, dirI == 1 ? -10 : 10);
+                if (MarcarCE) Linea("PIFVG_ic" + f.Id, f.TBirth, f.TcInv, f.Ce, ConOpacidad(col, 65), DashStyleHelper.Dash, 1, false);
+            }
+            foreach (Fvg f in previa)
+            {
+                int dirI = -f.Dir;
+                Brush col = dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
+                DateTime fin = Motor.FinVelaAbierta(tUlt, f.Tf);
+                Caja("PIFVG_p" + f.Id, f.TBirth, f.Top, fin, f.Bot, ConOpacidad(col, 80), col, 0, DashStyleHelper.Dot, 1);
+                Texto("PIFVG_pt" + f.Id, fin, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m en formación · " + H(fin), col, dirI == 1 ? -10 : 10);
+                if (MarcarCE) Linea("PIFVG_pc" + f.Id, f.TBirth, fin, f.Ce, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
+            }
+        }
+
+        void DibujarCisd(List<CisdEvento> conf, List<CisdEvento> previa)
+        {
+            foreach (CisdEvento e in conf)
+            {
+                if (Motor.TapadoCisd(e, conf, DedupMinutos, DedupPuntos)) continue;
+                Brush col = e.Dir == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
+                string id = "PIFVG_c" + e.Tf + (e.Dir == 1 ? "a" : "b");
+                Linea(id, e.TStart, e.T, e.Lvl, col, DashStyleHelper.Solid, 1, false);
+                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m", col, e.Dir == 1 ? -10 : 10);
+            }
+            foreach (CisdEvento e in previa)
+            {
+                Brush col = e.Dir == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
+                string id = "PIFVG_cp" + e.Tf + (e.Dir == 1 ? "a" : "b");
+                Linea(id, e.TStart, e.T, e.Lvl, col, DashStyleHelper.Dot, 1, false);
+                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m en formación · " + H(e.T), col, e.Dir == 1 ? -10 : 10);
+            }
+        }
+
+        void DibujarHtf(List<FvgHtf> sel, DateTime finNy)
+        {
+            foreach (FvgHtf f in sel)
+            {
+                Brush col = f.Dir == 1 ? ColorHtfAlcista : ColorHtfBajista;
+                int op = f.Tf == "15m" ? Contorno15m : f.Tf == "1h" ? Contorno1h : Contorno4h;
+                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, finNy, f.Bot, ConOpacidad(ColorContorno, op), col, HtfOpacidadRelleno, DashStyleHelper.Solid, 1);
+                Etiqueta(f.Dir == 1 ? f.Bot : f.Top, "FVG " + f.Tf, col, f.Dir != 1);
+                if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, finNy, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
+            }
+        }
+
+        static string NombreNivel(string k)
+        {
+            switch (k)
+            {
+                case "ASIA_H": return "Asia H";
+                case "ASIA_L": return "Asia L";
+                case "LON_H": return "Londres H";
+                case "LON_L": return "Londres L";
+                case "PM_H": return "Pre-mkt H";
+                case "PM_L": return "Pre-mkt L";
+                case "SW15_H": case "SW15_L": return "Swing 15m";
+                case "SW5_H": case "SW5_L": return "Swing 5m";
+                default: return k;
+            }
+        }
+
+        static Brush ColorNivel(string k)
+        {
+            if (k == "PDH" || k == "PDL") return cPd;
+            if (k.StartsWith("EQ")) return cEq;
+            if (k.StartsWith("SW")) return cSw;
+            return cSes;
+        }
+
+        void DibujarNiveles(List<Nivel> niveles, double precio)
+        {
+            var visibles = new List<Nivel>();
+            foreach (Nivel L in niveles)
+            {
+                bool mostrar = L.Tipo.StartsWith("SW5") ? MostrarSwings5
+                             : L.Tipo.StartsWith("SW15") || L.Tipo.StartsWith("EQ") ? MostrarSwings15
+                             : L.Tipo == "PDH" || L.Tipo == "PDL" ? MostrarPdhPdl : MostrarSesiones;
+                if (!mostrar) continue;
+                visibles.Add(L);
+                Linea("PIFVG_n" + L.Id, L.T, L.T + barra, L.P, ConOpacidad(ColorNivel(L.Tipo), 85), L.Htf ? DashStyleHelper.Solid : DashStyleHelper.Dot, 1, true);
+            }
+            // etiquetas solo en los N más cercanos por arriba y por abajo
+            var arriba = visibles.Where(L => L.P > precio).OrderBy(L => L.P).Take(EtiquetasNiveles);
+            var abajo = visibles.Where(L => L.P <= precio).OrderByDescending(L => L.P).Take(EtiquetasNiveles);
+            foreach (Nivel L in arriba.Concat(abajo))
+                Etiqueta(L.P, NombreNivel(L.Tipo) + " " + P(L.P), ColorNivel(L.Tipo), true);
+        }
+
+        void DibujarGex(double precio, DateTime finNy, DateTime diaNy)
+        {
+            string error;
+            lock (gexLock) error = gexError;
+            GexResultado r = gexResAplicado;
+            string estado;
+            if (r == null || double.IsNaN(gexRazon))
+                estado = error != null ? "GEX: sin datos (" + error + ")" : "GEX: descargando QQQ de CBOE…";
+            else
+            {
+                DateTime desde = diaNy > DateTime.MinValue ? diaNy : finNy.AddDays(-1);
+                double cw = r.CallWall * gexRazon, pw = r.PutWall * gexRazon, fl = r.Flip * gexRazon;
+                Linea("PIFVG_gcw", desde, desde + barra, cw, ColorCallWall, DashStyleHelper.Solid, 2, true);
+                Etiqueta(cw, "GEX Call wall " + P(cw), ColorCallWall, true);
+                Linea("PIFVG_gpw", desde, desde + barra, pw, ColorPutWall, DashStyleHelper.Solid, 2, true);
+                Etiqueta(pw, "GEX Put wall " + P(pw), ColorPutWall, true);
+                if (!double.IsNaN(r.Flip))
+                {
+                    Linea("PIFVG_gfl", desde, desde + barra, fl, ColorFlip, DashStyleHelper.Dash, 2, true);
+                    Etiqueta(fl, "GEX Gamma flip " + P(fl), ColorFlip, true);
+                }
+                for (int i = 0; i < r.Extra.Count; i++)
+                {
+                    double v = r.Extra[i] * gexRazon;
+                    Linea("PIFVG_gx" + i, desde, desde + barra, v, ConOpacidad(ColorGexOtros, 70), DashStyleHelper.Dot, 1, true);
+                    Etiqueta(v, "GEX " + P(v), ColorGexOtros, true);
+                }
+                string regimen = double.IsNaN(r.Flip) ? (r.Total >= 0 ? "gamma + (sin flip cercano)" : "gamma − (sin flip cercano)")
+                               : precio >= fl ? "sobre el flip: gamma + (rango, reversión)" : "bajo el flip: gamma − (tendencia, más volatilidad)";
+                string razon = "razón NQ/QQQ " + gexRazon.ToString("0.000", CultureInfo.InvariantCulture) + (GexRazonManual > 0 ? " (manual)" : " (NQ de las " + H(gexHora) + ")");
+                estado = "GEX QQQ " + H(r.Calculado) + " NY · " + razon + " · " + regimen
+                         + (error != null ? " · última descarga falló: " + error : "");
+            }
+            Draw.TextFixed(this, "PIFVG_gestado", estado, TextPosition.TopRight, TextoGrafico, fuente, Brushes.Transparent, Brushes.Transparent, 0);
+            tagsAhora.Add("PIFVG_gestado");
+        }
+
+        #region Propiedades
+
+        [Display(Name = "IFVG", Order = 1, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool MostrarIFVG { get; set; }
+        [Display(Name = "CISD", Order = 2, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool MostrarCISD { get; set; }
+        [Display(Name = "FVG 15m / 1h / 4h", Order = 3, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool MostrarHTF { get; set; }
+        [Display(Name = "Niveles de liquidez", Order = 4, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool MostrarNiveles { get; set; }
+        [Display(Name = "GEX", Order = 5, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool MostrarGEX { get; set; }
+        [Display(Name = "Sonido", Order = 6, GroupName = "0. Mostrar (también con los botones del gráfico)")]
+        public bool Sonido { get; set; }
+
+        [Display(Name = "Señal en 1m", Order = 1, GroupName = "1. Señal IFVG / CISD")]
+        public bool Usar1m { get; set; }
+        [Display(Name = "Señal en 2m", Order = 2, GroupName = "1. Señal IFVG / CISD")]
+        public bool Usar2m { get; set; }
+        [Display(Name = "Señal en 3m", Order = 3, GroupName = "1. Señal IFVG / CISD")]
+        public bool Usar3m { get; set; }
+        [Display(Name = "Señal en 4m", Order = 4, GroupName = "1. Señal IFVG / CISD")]
+        public bool Usar4m { get; set; }
+        [Display(Name = "Señal en 5m", Order = 5, GroupName = "1. Señal IFVG / CISD")]
+        public bool Usar5m { get; set; }
+        [Range(0, int.MaxValue)]
+        [Display(Name = "Tamaño mínimo del FVG (ticks)", Order = 6, GroupName = "1. Señal IFVG / CISD")]
+        public int FvgMinTicks { get; set; }
+        [Range(0, int.MaxValue)]
+        [Display(Name = "Máx. velas (de su TF) para invertirse; 0 = sin límite", Order = 7, GroupName = "1. Señal IFVG / CISD")]
+        public int MaxVelasInv { get; set; }
+        [Display(Name = "Límite uniforme en minutos (en vez de velas)", Order = 8, GroupName = "1. Señal IFVG / CISD")]
+        public bool LimiteEnMinutos { get; set; }
+        [Range(0, int.MaxValue)]
+        [Display(Name = "Máx. minutos para invertirse; 0 = sin límite", Order = 9, GroupName = "1. Señal IFVG / CISD")]
+        public int MaxMinutosInv { get; set; }
+        [Range(1, 10)]
+        [Display(Name = "Velas a cada lado para pivotes (CISD, swings 5m)", Order = 10, GroupName = "1. Señal IFVG / CISD")]
+        public int VelasPivote { get; set; }
+
+        [Display(Name = "Vista previa en formación (punteado)", Order = 1, GroupName = "2. Visual IFVG / CISD")]
+        public bool VistaPrevia { get; set; }
+        [Display(Name = "Dejar los IFVG muertos del día (gris)", Order = 2, GroupName = "2. Visual IFVG / CISD")]
+        public bool MostrarMuertos { get; set; }
+        [Range(0, int.MaxValue)]
+        [Display(Name = "Ocultar IFVG tras N minutos de invertirse (0 = mientras vivan)", Order = 3, GroupName = "2. Visual IFVG / CISD")]
+        public int OcultarIfvgMinutos { get; set; }
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Deduplicar entre TFs: ventana (minutos)", Order = 4, GroupName = "2. Visual IFVG / CISD")]
+        public int DedupMinutos { get; set; }
+        [Range(0, double.MaxValue)]
+        [Display(Name = "Deduplicar CISD: niveles a menos de (puntos)", Order = 5, GroupName = "2. Visual IFVG / CISD")]
+        public double DedupPuntos { get; set; }
+        [Display(Name = "Marcar el CE (50 %)", Order = 6, GroupName = "2. Visual IFVG / CISD")]
+        public bool MarcarCE { get; set; }
+        [Range(6, 30)]
+        [Display(Name = "Tamaño del texto", Order = 7, GroupName = "2. Visual IFVG / CISD")]
+        public int TamanoTexto { get; set; }
+        [XmlIgnore]
+        [Display(Name = "Color alcista (IFVG y CISD)", Order = 8, GroupName = "2. Visual IFVG / CISD")]
+        public Brush ColorIfvgAlcista { get; set; }
+        [Browsable(false)]
+        public string ColorIfvgAlcistaSerializable { get { return Serialize.BrushToString(ColorIfvgAlcista); } set { ColorIfvgAlcista = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color bajista (IFVG y CISD)", Order = 9, GroupName = "2. Visual IFVG / CISD")]
+        public Brush ColorIfvgBajista { get; set; }
+        [Browsable(false)]
+        public string ColorIfvgBajistaSerializable { get { return Serialize.BrushToString(ColorIfvgBajista); } set { ColorIfvgBajista = Serialize.StringToBrush(value); } }
+
+        [Display(Name = "15m", Order = 1, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool Usar15m { get; set; }
+        [Display(Name = "1h", Order = 2, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool Usar1h { get; set; }
+        [Display(Name = "4h", Order = 3, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool Usar4h { get; set; }
+        [Range(0, 6)]
+        [Display(Name = "Los N más cercanos por arriba y por abajo", Order = 4, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int HtfCercanos { get; set; }
+        [Range(0, 100)]
+        [Display(Name = "Opacidad del relleno (%)", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int HtfOpacidadRelleno { get; set; }
+        [XmlIgnore]
+        [Display(Name = "Color alcista", Order = 6, GroupName = "3. FVG 15m / 1h / 4h")]
+        public Brush ColorHtfAlcista { get; set; }
+        [Browsable(false)]
+        public string ColorHtfAlcistaSerializable { get { return Serialize.BrushToString(ColorHtfAlcista); } set { ColorHtfAlcista = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color bajista", Order = 7, GroupName = "3. FVG 15m / 1h / 4h")]
+        public Brush ColorHtfBajista { get; set; }
+        [Browsable(false)]
+        public string ColorHtfBajistaSerializable { get { return Serialize.BrushToString(ColorHtfBajista); } set { ColorHtfBajista = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color del contorno", Order = 8, GroupName = "3. FVG 15m / 1h / 4h")]
+        public Brush ColorContorno { get; set; }
+        [Browsable(false)]
+        public string ColorContornoSerializable { get { return Serialize.BrushToString(ColorContorno); } set { ColorContorno = Serialize.StringToBrush(value); } }
+        [Range(0, 100)]
+        [Display(Name = "Opacidad del contorno 15m (%)", Order = 9, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Contorno15m { get; set; }
+        [Range(0, 100)]
+        [Display(Name = "Opacidad del contorno 1h (%)", Order = 10, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Contorno1h { get; set; }
+        [Range(0, 100)]
+        [Display(Name = "Opacidad del contorno 4h (%)", Order = 11, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Contorno4h { get; set; }
+        [Display(Name = "Marcar el CE (50 %)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool CeEnHtf { get; set; }
+
+        [Display(Name = "PDH / PDL", Order = 1, GroupName = "4. Liquidez")]
+        public bool MostrarPdhPdl { get; set; }
+        [Display(Name = "Sesiones (Asia, Londres, pre-market)", Order = 2, GroupName = "4. Liquidez")]
+        public bool MostrarSesiones { get; set; }
+        [Display(Name = "Swings 15m y EQH/EQL", Order = 3, GroupName = "4. Liquidez")]
+        public bool MostrarSwings15 { get; set; }
+        [Display(Name = "Swings 5m", Order = 4, GroupName = "4. Liquidez")]
+        public bool MostrarSwings5 { get; set; }
+        [Range(0, 10)]
+        [Display(Name = "Etiquetas en los N más cercanos por lado", Order = 5, GroupName = "4. Liquidez")]
+        public int EtiquetasNiveles { get; set; }
+        [Display(Name = "Asia (hora NY, HHMM-HHMM)", Order = 6, GroupName = "4. Liquidez")]
+        public string SesionAsia { get; set; }
+        [Display(Name = "Londres (hora NY, HHMM-HHMM)", Order = 7, GroupName = "4. Liquidez")]
+        public string SesionLondres { get; set; }
+        [Display(Name = "Pre-market NY (hora NY, HHMM-HHMM)", Order = 8, GroupName = "4. Liquidez")]
+        public string SesionPremarket { get; set; }
+
+        [Range(1, 240)]
+        [Display(Name = "Actualizar cada (minutos)", Order = 1, GroupName = "5. GEX (QQQ, CBOE)")]
+        public int GexMinutos { get; set; }
+        [Range(1, 365)]
+        [Display(Name = "Vencimientos incluidos (días)", Order = 2, GroupName = "5. GEX (QQQ, CBOE)")]
+        public int GexMaxDias { get; set; }
+        [Range(0, 10)]
+        [Display(Name = "Strikes extra con más GEX", Order = 3, GroupName = "5. GEX (QQQ, CBOE)")]
+        public int GexStrikesExtra { get; set; }
+        [Range(0, double.MaxValue)]
+        [Display(Name = "Razón NQ/QQQ manual (0 = automática)", Order = 4, GroupName = "5. GEX (QQQ, CBOE)")]
+        public double GexRazonManual { get; set; }
+        [XmlIgnore]
+        [Display(Name = "Color call wall", Order = 5, GroupName = "5. GEX (QQQ, CBOE)")]
+        public Brush ColorCallWall { get; set; }
+        [Browsable(false)]
+        public string ColorCallWallSerializable { get { return Serialize.BrushToString(ColorCallWall); } set { ColorCallWall = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color put wall", Order = 6, GroupName = "5. GEX (QQQ, CBOE)")]
+        public Brush ColorPutWall { get; set; }
+        [Browsable(false)]
+        public string ColorPutWallSerializable { get { return Serialize.BrushToString(ColorPutWall); } set { ColorPutWall = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color gamma flip", Order = 7, GroupName = "5. GEX (QQQ, CBOE)")]
+        public Brush ColorFlip { get; set; }
+        [Browsable(false)]
+        public string ColorFlipSerializable { get { return Serialize.BrushToString(ColorFlip); } set { ColorFlip = Serialize.StringToBrush(value); } }
+        [XmlIgnore]
+        [Display(Name = "Color otros strikes", Order = 8, GroupName = "5. GEX (QQQ, CBOE)")]
+        public Brush ColorGexOtros { get; set; }
+        [Browsable(false)]
+        public string ColorGexOtrosSerializable { get { return Serialize.BrushToString(ColorGexOtros); } set { ColorGexOtros = Serialize.StringToBrush(value); } }
+
+        [Display(Name = "Sonido IFVG (3m o más)", Order = 1, GroupName = "6. Sonido")]
+        public string SonidoIfvg { get; set; }
+        [Display(Name = "Sonido nivel GEX tocado", Order = 2, GroupName = "6. Sonido")]
+        public string SonidoGex { get; set; }
+        [Range(0, 240)]
+        [Display(Name = "Minutos entre avisos del mismo nivel GEX", Order = 3, GroupName = "6. Sonido")]
+        public int MinutosEntreAvisosGex { get; set; }
+
+        #endregion
+    }
+}
+
 // ===== NUCLEO INICIO =====
-namespace NinjaTrader.NinjaScript.Indicators.PrimerIFVGNucleo
+// Va en su propio espacio de nombres, fuera de NinjaTrader.NinjaScript.Indicators y después del indicador:
+// NinjaTrader arma el bloque "NinjaScript generated code" con el primer namespace del archivo.
+namespace PrimerIFVGNucleo
 {
     using System;
     using System.Collections.Generic;
@@ -707,809 +1513,6 @@ namespace NinjaTrader.NinjaScript.Indicators.PrimerIFVGNucleo
     }
 }
 // ===== NUCLEO FIN =====
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-    public class PrimerIFVG : Indicator
-    {
-        // ── estado ──────────────────────────────────────────────────────────
-        Motor motor;
-        readonly object motorLock = new object();     // el motor se alimenta en el hilo de datos y se lee en el de dibujo
-        TimeZoneInfo tzNy, tzLocal;
-        DateTime ultimo1m = DateTime.MinValue;
-        readonly object gexLock = new object();
-        GexResultado gexRes;
-        string gexError;
-        bool reintentar;
-        volatile bool gexDescargando;
-        DateTime proximaDescargaUtc = DateTime.MinValue;
-        double gexRazon = double.NaN;
-        DateTime gexHora;
-        GexResultado gexResAplicado;
-        double precioPrevio = double.NaN;
-        readonly Dictionary<string, DateTime> ultimoAvisoGex = new Dictionary<string, DateTime>();
-        HashSet<string> tagsPrevios = new HashSet<string>(), tagsAhora = new HashSet<string>();
-        SimpleFont fuente;
-        TimeSpan barra = TimeSpan.FromMinutes(1);       // duración de la vela del gráfico
-        // etiquetas pegadas al borde derecho del gráfico (niveles, GEX, FVG 15m/1h/4h), dibujadas en OnRender
-        class EtiquetaDer { public double P; public string Texto; public Brush Color; public bool Arriba; }
-        List<EtiquetaDer> etiquetasNuevas = new List<EtiquetaDer>();
-        volatile List<EtiquetaDer> etiquetasDerecha = new List<EtiquetaDer>();
-        System.Windows.Threading.DispatcherTimer timer;
-        NinjaTrader.Gui.Chart.Chart chartWindow;
-        readonly List<System.Windows.Controls.Button> botones = new List<System.Windows.Controls.Button>();
-        bool botonesVisibles;
-        static readonly SolidColorBrush bOn = Congelar(Color.FromRgb(38, 120, 110)), bOff = Congelar(Color.FromRgb(90, 90, 90));
-        static readonly SolidColorBrush cPd = Congelar(Color.FromRgb(255, 179, 0)), cSes = Congelar(Color.FromRgb(66, 165, 245)),
-                                        cSw = Congelar(Color.FromRgb(158, 158, 158)), cEq = Congelar(Color.FromRgb(171, 71, 188));
-
-        static SolidColorBrush Congelar(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
-
-        static SolidColorBrush ConOpacidad(Brush b, int opacidad)
-        {
-            Color c = b is SolidColorBrush ? ((SolidColorBrush)b).Color : Colors.Gray;
-            return Congelar(Color.FromArgb((byte)Math.Max(0, Math.Min(255, opacidad * 255 / 100)), c.R, c.G, c.B));
-        }
-
-        protected override void OnStateChange()
-        {
-            if (State == State.SetDefaults)
-            {
-                Description = "Primer IFVG: IFVG 1–5m con vista previa, CISD, FVG 15m/1h/4h con CE, niveles de liquidez y GEX de QQQ.";
-                Name = "PrimerIFVG";
-                Calculate = Calculate.OnPriceChange;
-                IsOverlay = true;
-                DisplayInDataBox = false;
-                DrawOnPricePanel = true;
-                PaintPriceMarkers = false;
-                IsSuspendedWhileInactive = false;
-                ScaleJustification = NinjaTrader.Gui.Chart.ScaleJustification.Right;
-
-                MostrarIFVG = true; MostrarCISD = true; MostrarHTF = true; MostrarNiveles = true; MostrarGEX = true; Sonido = true;
-
-                Usar1m = true; Usar2m = true; Usar3m = true; Usar4m = true; Usar5m = true;
-                FvgMinTicks = 0; MaxVelasInv = 60; LimiteEnMinutos = false; MaxMinutosInv = 60; VelasPivote = 2;
-
-                VistaPrevia = true; MostrarMuertos = false; OcultarIfvgMinutos = 0; DedupMinutos = 10; DedupPuntos = 2;
-                MarcarCE = true; TamanoTexto = 10;
-                ColorIfvgAlcista = Congelar(Color.FromRgb(0x26, 0xA6, 0x9A));
-                ColorIfvgBajista = Congelar(Color.FromRgb(0xEF, 0x53, 0x50));
-
-                Usar15m = true; Usar1h = true; Usar4h = true; HtfCercanos = 3; HtfOpacidadRelleno = 7;
-                ColorHtfAlcista = Congelar(Color.FromRgb(0x1B, 0x5E, 0x20));
-                ColorHtfBajista = Congelar(Color.FromRgb(0x80, 0x19, 0x22));
-                ColorContorno = Brushes.Black;
-                Contorno15m = 20; Contorno1h = 45; Contorno4h = 75; CeEnHtf = true;
-
-                MostrarPdhPdl = true; MostrarSesiones = true; MostrarSwings15 = true; MostrarSwings5 = true; EtiquetasNiveles = 3;
-                SesionAsia = "1900-0100"; SesionLondres = "0200-0600"; SesionPremarket = "0700-0930";
-
-                GexMinutos = 15; GexMaxDias = 45; GexStrikesExtra = 3; GexRazonManual = 0;
-                ColorCallWall = Congelar(Color.FromRgb(0xE9, 0x1E, 0x63));
-                ColorPutWall = Congelar(Color.FromRgb(0x00, 0xAC, 0xC1));
-                ColorFlip = Congelar(Color.FromRgb(0x39, 0x49, 0xAB));
-                ColorGexOtros = Brushes.Gray;
-
-                SonidoIfvg = "Alert2.wav"; SonidoGex = "Alert4.wav"; MinutosEntreAvisosGex = 5;
-            }
-            else if (State == State.Configure)
-            {
-                AddDataSeries(BarsPeriodType.Minute, 1);
-            }
-            else if (State == State.DataLoaded)
-            {
-                tzNy = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-                tzLocal = Core.Globals.GeneralOptions.TimeZoneInfo;
-                var cfg = new ConfigMotor
-                {
-                    VelasPivote = VelasPivote,
-                    FvgMinPuntos = FvgMinTicks * TickSize,
-                    MaxVelasInv = MaxVelasInv,
-                    LimiteEnMinutos = LimiteEnMinutos,
-                    MaxMinutosInv = MaxMinutosInv
-                };
-                int a, b;
-                if (Utiles.LeerSesion(SesionAsia, out a, out b)) { cfg.AsiaIni = a; cfg.AsiaFin = b; }
-                if (Utiles.LeerSesion(SesionLondres, out a, out b)) { cfg.LonIni = a; cfg.LonFin = b; }
-                if (Utiles.LeerSesion(SesionPremarket, out a, out b)) { cfg.PmIni = a; cfg.PmFin = b; }
-                motor = new Motor(cfg);
-                fuente = new SimpleFont("Arial", TamanoTexto);
-                if (BarsPeriod.BarsPeriodType == BarsPeriodType.Second) barra = TimeSpan.FromSeconds(BarsPeriod.Value);
-                else if (BarsPeriod.BarsPeriodType == BarsPeriodType.Minute) barra = TimeSpan.FromMinutes(BarsPeriod.Value);
-            }
-            else if (State == State.Historical)
-            {
-                if (ChartControl != null) ChartControl.Dispatcher.InvokeAsync(CrearBotones);
-            }
-            else if (State == State.Realtime)
-            {
-                if (ChartControl != null)
-                    ChartControl.Dispatcher.InvokeAsync(() =>
-                    {
-                        timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-                        timer.Tick += (s, e) => Tick();
-                        timer.Start();
-                    });
-            }
-            else if (State == State.Terminated)
-            {
-                if (ChartControl != null)
-                    ChartControl.Dispatcher.InvokeAsync(() =>
-                    {
-                        if (timer != null) { timer.Stop(); timer = null; }
-                        QuitarBotones();
-                    });
-            }
-        }
-
-        // ── datos ───────────────────────────────────────────────────────────
-
-        DateTime ANy(DateTime local)
-        {
-            try { return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), tzLocal, tzNy); }
-            catch (ArgumentException) { return local; }
-        }
-
-        DateTime ALocal(DateTime ny)
-        {
-            try { return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(ny, DateTimeKind.Unspecified), tzNy, tzLocal); }
-            catch (ArgumentException) { return ny; }
-        }
-
-        bool[] TfOn() { return new[] { false, Usar1m, Usar2m, Usar3m, Usar4m, Usar5m }; }
-
-        protected override void OnBarUpdate()
-        {
-            if (motor == null) return;
-            if (BarsInProgress == 1)
-            {
-                // vela de 1 minuto cerrada: en histórico es la [0]; en tiempo real, la [1] en el primer tick de la siguiente
-                int idx = State == State.Historical ? 0 : (IsFirstTickOfBar ? 1 : -1);
-                if (idx < 0 || CurrentBars[1] < idx) return;
-                DateTime tcLocal = Times[1][idx];
-                // la vela en curso al cargar el gráfico todavía no cerró: se procesa en tiempo real
-                if (tcLocal <= ultimo1m || (State == State.Historical && tcLocal > Core.Globals.Now)) return;
-                ultimo1m = tcLocal;
-                DateTime tcNy = ANy(tcLocal);
-                List<Fvg> nuevos;
-                lock (motorLock)
-                {
-                    motor.ProcesarMinuto(tcNy.AddMinutes(-1), tcNy, Opens[1][idx], Highs[1][idx], Lows[1][idx], Closes[1][idx]);
-                    nuevos = new List<Fvg>(motor.NuevosIfvg);
-                    motor.DescartarEventos();
-                }
-                if (State == State.Realtime) AvisarIfvg(nuevos);
-                return;
-            }
-            if (BarsInProgress == 0 && State == State.Realtime)
-                AvisarGex(Closes[0][0]);
-        }
-
-        // ── sonido ──────────────────────────────────────────────────────────
-
-        // nombre de un .wav de la carpeta sounds de NinjaTrader, o una ruta completa
-        static string RutaSonido(string archivo)
-        {
-            return System.IO.Path.IsPathRooted(archivo) ? archivo : System.IO.Path.Combine(Core.Globals.InstallDir, "sounds", archivo);
-        }
-
-        void AvisarIfvg(List<Fvg> nuevos)
-        {
-            if (!Sonido) return;
-            bool[] on = TfOn();
-            foreach (Fvg f in nuevos)
-            {
-                if (f.Tf < 3 || !on[f.Tf]) continue;
-                int dirI = -f.Dir;
-                Alert("PIFVG_ifvg_" + f.Id, Priority.Medium,
-                      string.Format(CultureInfo.InvariantCulture, "IFVG {0}m {1} · {2:0.00}–{3:0.00}", f.Tf, dirI == 1 ? "alcista" : "bajista", f.Bot, f.Top),
-                      RutaSonido(SonidoIfvg), 0, Brushes.Black, dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista);
-            }
-        }
-
-        void AvisarGex(double precio)
-        {
-            double prev = precioPrevio;
-            precioPrevio = precio;
-            if (!Sonido || !MostrarGEX || double.IsNaN(prev) || gexResAplicado == null || double.IsNaN(gexRazon)) return;
-            var niveles = new List<KeyValuePair<string, double>>
-            {
-                new KeyValuePair<string, double>("Call wall", gexResAplicado.CallWall * gexRazon),
-                new KeyValuePair<string, double>("Put wall", gexResAplicado.PutWall * gexRazon)
-            };
-            if (!double.IsNaN(gexResAplicado.Flip)) niveles.Add(new KeyValuePair<string, double>("Gamma flip", gexResAplicado.Flip * gexRazon));
-            foreach (KeyValuePair<string, double> kv in niveles)
-            {
-                double lvl = kv.Value;
-                bool cruza = (prev < lvl && precio >= lvl) || (prev > lvl && precio <= lvl);
-                if (!cruza) continue;
-                DateTime ult;
-                if (ultimoAvisoGex.TryGetValue(kv.Key, out ult) && (DateTime.Now - ult).TotalMinutes < MinutosEntreAvisosGex) continue;
-                ultimoAvisoGex[kv.Key] = DateTime.Now;
-                Alert("PIFVG_gex_" + kv.Key, Priority.Medium,
-                      string.Format(CultureInfo.InvariantCulture, "GEX {0} {1:0.00} tocado", kv.Key, lvl),
-                      RutaSonido(SonidoGex), 0, Brushes.Black, Brushes.Orange);
-            }
-        }
-
-        // ── GEX: descarga en segundo plano ──────────────────────────────────
-
-        void DescargarGexSiToca()
-        {
-            lock (gexLock)
-                if (reintentar) { reintentar = false; proximaDescargaUtc = DateTime.UtcNow.AddMinutes(2); }
-            if (!MostrarGEX || gexDescargando || DateTime.UtcNow < proximaDescargaUtc) return;
-            gexDescargando = true;
-            proximaDescargaUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, GexMinutos));
-            DateTime ahoraUtc = DateTime.UtcNow;
-            TimeZoneInfo tz = tzNy;
-            double maxDias = GexMaxDias;
-            int extra = GexStrikesExtra;
-            Task.Run(() =>
-            {
-                try
-                {
-                    ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-                    string json;
-                    using (var wc = new WebClient())
-                    {
-                        wc.Headers.Add("User-Agent", "Mozilla/5.0");
-                        json = wc.DownloadString("https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json");
-                    }
-                    var ops = new List<GexOpcion>();
-                    double spot = GexCalc.Leer(json, ahoraUtc, tz, maxDias, ops);
-                    GexResultado res = GexCalc.Calcular(spot, ops, 0.04, 0.006, extra);
-                    res.Calculado = TimeZoneInfo.ConvertTimeFromUtc(ahoraUtc, tz);
-                    lock (gexLock) { gexRes = res; gexError = null; }
-                }
-                catch (Exception ex)
-                {
-                    lock (gexLock) { gexError = ex.Message; reintentar = true; }
-                }
-                finally
-                {
-                    gexDescargando = false;
-                }
-            });
-        }
-
-        // Razón NQ/QQQ: con el precio de NQ de hace 15 minutos en horario regular (CBOE trae QQQ con ese retraso);
-        // fuera de horario, con el NQ de las 16:00 NY de la última sesión.
-        void AplicarGex()
-        {
-            GexResultado res;
-            lock (gexLock) res = gexRes;
-            if (res == null || ReferenceEquals(res, gexResAplicado)) return;
-            gexResAplicado = res;
-            if (GexRazonManual > 0) { gexRazon = GexRazonManual; gexHora = res.Calculado; return; }
-            DateTime refNy = res.Calculado.AddMinutes(-15);
-            int m = refNy.Hour * 60 + refNy.Minute;
-            bool habil = refNy.DayOfWeek != DayOfWeek.Saturday && refNy.DayOfWeek != DayOfWeek.Sunday;
-            if (!(habil && m >= 570 && m <= 960))
-            {
-                DateTime d = m < 570 ? refNy.Date.AddDays(-1) : refNy.Date;
-                while (d.DayOfWeek == DayOfWeek.Saturday || d.DayOfWeek == DayOfWeek.Sunday) d = d.AddDays(-1);
-                refNy = d.AddHours(16);
-            }
-            int idx = BarsArray[1].GetBar(ALocal(refNy));
-            double nq = idx >= 0 ? BarsArray[1].GetClose(idx) : Closes[1][0];
-            gexRazon = nq / res.Spot;
-            gexHora = refNy;
-        }
-
-        // ── botones del gráfico ─────────────────────────────────────────────
-
-        void CrearBotones()
-        {
-            chartWindow = Window.GetWindow(ChartControl.Parent) as NinjaTrader.Gui.Chart.Chart;
-            if (chartWindow == null) return;
-            string[] nombres = { "IFVG", "CISD", "FVG HTF", "Niveles", "GEX", "Sonido" };
-            for (int i = 0; i < nombres.Length; i++)
-            {
-                int k = i;
-                var b = new System.Windows.Controls.Button { Content = nombres[i], Margin = new Thickness(2, 0, 2, 0), Padding = new Thickness(6, 1, 6, 1), Foreground = Brushes.White, FontSize = 11 };
-                b.Click += (s, e) => { Alternar(k); PintarBoton(b, Estado(k)); Redibujar(); };
-                PintarBoton(b, Estado(k));
-                botones.Add(b);
-            }
-            if (TabSeleccionada()) MostrarBotones();
-            chartWindow.MainTabControl.SelectionChanged += CambioDePestana;
-        }
-
-        bool Estado(int k)
-        {
-            switch (k)
-            {
-                case 0: return MostrarIFVG;
-                case 1: return MostrarCISD;
-                case 2: return MostrarHTF;
-                case 3: return MostrarNiveles;
-                case 4: return MostrarGEX;
-                default: return Sonido;
-            }
-        }
-
-        void Alternar(int k)
-        {
-            switch (k)
-            {
-                case 0: MostrarIFVG = !MostrarIFVG; break;
-                case 1: MostrarCISD = !MostrarCISD; break;
-                case 2: MostrarHTF = !MostrarHTF; break;
-                case 3: MostrarNiveles = !MostrarNiveles; break;
-                case 4: MostrarGEX = !MostrarGEX; break;
-                default: Sonido = !Sonido; break;
-            }
-        }
-
-        static void PintarBoton(System.Windows.Controls.Button b, bool on) { b.Background = on ? bOn : bOff; b.Opacity = on ? 1.0 : 0.6; }
-
-        void MostrarBotones()
-        {
-            if (botonesVisibles || chartWindow == null) return;
-            foreach (System.Windows.Controls.Button b in botones) chartWindow.MainMenu.Add(b);
-            botonesVisibles = true;
-        }
-
-        void OcultarBotones()
-        {
-            if (!botonesVisibles || chartWindow == null) return;
-            foreach (System.Windows.Controls.Button b in botones) chartWindow.MainMenu.Remove(b);
-            botonesVisibles = false;
-        }
-
-        void QuitarBotones()
-        {
-            OcultarBotones();
-            if (chartWindow != null) chartWindow.MainTabControl.SelectionChanged -= CambioDePestana;
-            botones.Clear();
-        }
-
-        bool TabSeleccionada()
-        {
-            foreach (System.Windows.Controls.TabItem tab in chartWindow.MainTabControl.Items)
-            {
-                var ct = tab.Content as ChartTab;
-                if (ct != null && ct.ChartControl == ChartControl && tab == chartWindow.MainTabControl.SelectedItem) return true;
-            }
-            return false;
-        }
-
-        void CambioDePestana(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-        {
-            if (e.AddedItems.Count <= 0 || !(e.AddedItems[0] is System.Windows.Controls.TabItem)) return;
-            if (TabSeleccionada()) MostrarBotones(); else OcultarBotones();
-        }
-
-        // ── dibujo ──────────────────────────────────────────────────────────
-
-        void Tick()
-        {
-            if (State != State.Realtime) { if (timer != null) { timer.Stop(); timer = null; } return; }
-            DescargarGexSiToca();
-            Redibujar();
-        }
-
-        void Redibujar()
-        {
-            if (State != State.Realtime) return;
-            TriggerCustomEvent(o =>
-            {
-                try { Dibujar(); }
-                catch (Exception ex) { Print("PrimerIFVG: " + ex.Message); }
-            }, 0, null);
-            ForceRefresh();
-        }
-
-        Brush TextoGrafico { get { return ChartControl != null && ChartControl.Properties != null ? ChartControl.Properties.ChartText : Brushes.Gray; } }
-
-        void Caja(string tag, DateTime t1Ny, double top, DateTime t2Ny, double bot, Brush borde, Brush relleno, int opRelleno, DashStyleHelper estilo, int ancho)
-        {
-            Rectangle r = Draw.Rectangle(this, tag, false, ALocal(t1Ny), top, ALocal(t2Ny), bot, borde, relleno, opRelleno);
-            r.OutlineStroke = new Stroke(borde, estilo, ancho);
-            r.IsLocked = true;
-            tagsAhora.Add(tag);
-        }
-
-        void Linea(string tag, DateTime t1Ny, DateTime t2Ny, double y, Brush color, DashStyleHelper estilo, int ancho, bool extender)
-        {
-            if (extender) Draw.Ray(this, tag, false, ALocal(t1Ny), y, ALocal(t2Ny), y, color, estilo, ancho);
-            else Draw.Line(this, tag, false, ALocal(t1Ny), y, ALocal(t2Ny), y, color, estilo, ancho);
-            tagsAhora.Add(tag);
-        }
-
-        void Texto(string tag, DateTime tNy, double y, string txt, Brush color, int offset)
-        {
-            Draw.Text(this, tag, false, txt, ALocal(tNy), y, offset, color, fuente, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-            tagsAhora.Add(tag);
-        }
-
-        void Etiqueta(double p, string txt, Brush color, bool arriba)
-        {
-            etiquetasNuevas.Add(new EtiquetaDer { P = p, Texto = txt, Color = color, Arriba = arriba });
-        }
-
-        // Etiquetas al borde derecho, sobre o bajo su precio; si se pisan, se corren hacia abajo.
-        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-        {
-            base.OnRender(chartControl, chartScale);
-            List<EtiquetaDer> lista = etiquetasDerecha;
-            if (IsInHitTest || lista == null || lista.Count == 0 || fuente == null) return;
-            using (SharpDX.DirectWrite.TextFormat formato = fuente.ToDirectWriteTextFormat())
-            using (SharpDX.Direct2D1.Brush fondo = chartControl.Properties.ChartBackground.ToDxBrush(RenderTarget))
-            {
-                fondo.Opacity = 0.75f;
-                var filas = new List<KeyValuePair<float, EtiquetaDer>>();
-                foreach (EtiquetaDer e in lista)
-                {
-                    float y = chartScale.GetYByValue(e.P);
-                    filas.Add(new KeyValuePair<float, EtiquetaDer>(e.Arriba ? y - formato.FontSize - 4 : y + 1, e));
-                }
-                float ocupadoHasta = float.MinValue;
-                foreach (KeyValuePair<float, EtiquetaDer> f in filas.OrderBy(x => x.Key))
-                {
-                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Value.Texto, formato, 600, formato.FontSize + 6))
-                    using (SharpDX.Direct2D1.Brush pincel = f.Value.Color.ToDxBrush(RenderTarget))
-                    {
-                        float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
-                        float y = Math.Max(f.Key, ocupadoHasta);
-                        if (y > ChartPanel.Y + ChartPanel.H || y + alto < ChartPanel.Y) continue;
-                        float x = ChartPanel.X + ChartPanel.W - ancho - 6;
-                        RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 2, y, ancho + 4, alto), fondo);
-                        RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, pincel);
-                        ocupadoHasta = y + alto;
-                    }
-                }
-            }
-        }
-
-        static string P(double v) { return v.ToString("0.00", CultureInfo.InvariantCulture); }
-        static string H(DateTime t) { return t.ToString("HH:mm", CultureInfo.InvariantCulture); }
-
-        void Dibujar()
-        {
-            if (motor == null || CurrentBars[0] < 1 || CurrentBars[1] < 1) return;
-            tagsAhora = new HashSet<string>();
-            etiquetasNuevas = new List<EtiquetaDer>();
-            double precio = Closes[0][0];
-            DateTime ahoraNy = ANy(Times[1][0]);                 // cierre de la vela de 1m en curso
-            DateTime tUlt = ahoraNy.AddMinutes(-1);              // su apertura
-            DateTime finNy = ANy(Times[0][0]);
-            bool[] on = TfOn();
-
-            List<Fvg> conf;
-            List<CisdEvento> cisdConf;
-            var prevI = new List<Fvg>();
-            var prevC = new List<CisdEvento>();
-            List<FvgHtf> htf = null;
-            List<Nivel> niveles = null;
-            DateTime diaNy;
-            lock (motorLock)
-            {
-                conf = motor.IfvgCandidatos(ahoraNy, on, MostrarMuertos, OcultarIfvgMinutos);
-                cisdConf = motor.CisdCandidatos(on);
-                if (VistaPrevia) motor.Previa(precio, tUlt, on, DedupMinutos, DedupPuntos, conf, cisdConf, prevI, prevC);
-                if (MostrarHTF) htf = motor.HtfSeleccion(precio, Usar15m, Usar1h, Usar4h, HtfCercanos);
-                if (MostrarNiveles) niveles = motor.Liq.Niveles.Where(L => !L.Oculto && !L.Tomado).ToList();
-                diaNy = motor.DayStart;
-            }
-
-            if (htf != null) DibujarHtf(htf, finNy);
-            if (niveles != null) DibujarNiveles(niveles, precio);
-            if (MostrarIFVG) DibujarIfvg(conf, prevI, tUlt);
-            if (MostrarCISD) DibujarCisd(cisdConf, prevC);
-            AplicarGex();
-            if (MostrarGEX) DibujarGex(precio, finNy, diaNy);
-
-            foreach (string tag in tagsPrevios) if (!tagsAhora.Contains(tag)) RemoveDrawObject(tag);
-            tagsPrevios = tagsAhora;
-            etiquetasDerecha = etiquetasNuevas;
-        }
-
-        void DibujarIfvg(List<Fvg> conf, List<Fvg> previa, DateTime tUlt)
-        {
-            foreach (Fvg f in conf)
-            {
-                if (Motor.TapadoIfvg(f, f.TInv, conf, g => g.TInv, DedupMinutos)) continue;
-                int dirI = -f.Dir;
-                bool vivo = f.Estado == 1;
-                Brush col = vivo ? (dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista) : Brushes.Gray;
-                Caja("PIFVG_i" + f.Id, f.TBirth, f.Top, f.TcInv, f.Bot, ConOpacidad(col, 65), col, 14, DashStyleHelper.Solid, 1);
-                Texto("PIFVG_it" + f.Id, f.TcInv, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m", col, dirI == 1 ? -10 : 10);
-                if (MarcarCE) Linea("PIFVG_ic" + f.Id, f.TBirth, f.TcInv, f.Ce, ConOpacidad(col, 65), DashStyleHelper.Dash, 1, false);
-            }
-            foreach (Fvg f in previa)
-            {
-                int dirI = -f.Dir;
-                Brush col = dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
-                DateTime fin = Motor.FinVelaAbierta(tUlt, f.Tf);
-                Caja("PIFVG_p" + f.Id, f.TBirth, f.Top, fin, f.Bot, ConOpacidad(col, 80), col, 0, DashStyleHelper.Dot, 1);
-                Texto("PIFVG_pt" + f.Id, fin, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m en formación · " + H(fin), col, dirI == 1 ? -10 : 10);
-                if (MarcarCE) Linea("PIFVG_pc" + f.Id, f.TBirth, fin, f.Ce, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
-            }
-        }
-
-        void DibujarCisd(List<CisdEvento> conf, List<CisdEvento> previa)
-        {
-            foreach (CisdEvento e in conf)
-            {
-                if (Motor.TapadoCisd(e, conf, DedupMinutos, DedupPuntos)) continue;
-                Brush col = e.Dir == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
-                string id = "PIFVG_c" + e.Tf + (e.Dir == 1 ? "a" : "b");
-                Linea(id, e.TStart, e.T, e.Lvl, col, DashStyleHelper.Solid, 1, false);
-                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m", col, e.Dir == 1 ? -10 : 10);
-            }
-            foreach (CisdEvento e in previa)
-            {
-                Brush col = e.Dir == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
-                string id = "PIFVG_cp" + e.Tf + (e.Dir == 1 ? "a" : "b");
-                Linea(id, e.TStart, e.T, e.Lvl, col, DashStyleHelper.Dot, 1, false);
-                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m en formación · " + H(e.T), col, e.Dir == 1 ? -10 : 10);
-            }
-        }
-
-        void DibujarHtf(List<FvgHtf> sel, DateTime finNy)
-        {
-            foreach (FvgHtf f in sel)
-            {
-                Brush col = f.Dir == 1 ? ColorHtfAlcista : ColorHtfBajista;
-                int op = f.Tf == "15m" ? Contorno15m : f.Tf == "1h" ? Contorno1h : Contorno4h;
-                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, finNy, f.Bot, ConOpacidad(ColorContorno, op), col, HtfOpacidadRelleno, DashStyleHelper.Solid, 1);
-                Etiqueta(f.Dir == 1 ? f.Bot : f.Top, "FVG " + f.Tf, col, f.Dir != 1);
-                if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, finNy, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
-            }
-        }
-
-        static string NombreNivel(string k)
-        {
-            switch (k)
-            {
-                case "ASIA_H": return "Asia H";
-                case "ASIA_L": return "Asia L";
-                case "LON_H": return "Londres H";
-                case "LON_L": return "Londres L";
-                case "PM_H": return "Pre-mkt H";
-                case "PM_L": return "Pre-mkt L";
-                case "SW15_H": case "SW15_L": return "Swing 15m";
-                case "SW5_H": case "SW5_L": return "Swing 5m";
-                default: return k;
-            }
-        }
-
-        static Brush ColorNivel(string k)
-        {
-            if (k == "PDH" || k == "PDL") return cPd;
-            if (k.StartsWith("EQ")) return cEq;
-            if (k.StartsWith("SW")) return cSw;
-            return cSes;
-        }
-
-        void DibujarNiveles(List<Nivel> niveles, double precio)
-        {
-            var visibles = new List<Nivel>();
-            foreach (Nivel L in niveles)
-            {
-                bool mostrar = L.Tipo.StartsWith("SW5") ? MostrarSwings5
-                             : L.Tipo.StartsWith("SW15") || L.Tipo.StartsWith("EQ") ? MostrarSwings15
-                             : L.Tipo == "PDH" || L.Tipo == "PDL" ? MostrarPdhPdl : MostrarSesiones;
-                if (!mostrar) continue;
-                visibles.Add(L);
-                Linea("PIFVG_n" + L.Id, L.T, L.T + barra, L.P, ConOpacidad(ColorNivel(L.Tipo), 85), L.Htf ? DashStyleHelper.Solid : DashStyleHelper.Dot, 1, true);
-            }
-            // etiquetas solo en los N más cercanos por arriba y por abajo
-            var arriba = visibles.Where(L => L.P > precio).OrderBy(L => L.P).Take(EtiquetasNiveles);
-            var abajo = visibles.Where(L => L.P <= precio).OrderByDescending(L => L.P).Take(EtiquetasNiveles);
-            foreach (Nivel L in arriba.Concat(abajo))
-                Etiqueta(L.P, NombreNivel(L.Tipo) + " " + P(L.P), ColorNivel(L.Tipo), true);
-        }
-
-        void DibujarGex(double precio, DateTime finNy, DateTime diaNy)
-        {
-            string error;
-            lock (gexLock) error = gexError;
-            GexResultado r = gexResAplicado;
-            string estado;
-            if (r == null || double.IsNaN(gexRazon))
-                estado = error != null ? "GEX: sin datos (" + error + ")" : "GEX: descargando QQQ de CBOE…";
-            else
-            {
-                DateTime desde = diaNy > DateTime.MinValue ? diaNy : finNy.AddDays(-1);
-                double cw = r.CallWall * gexRazon, pw = r.PutWall * gexRazon, fl = r.Flip * gexRazon;
-                Linea("PIFVG_gcw", desde, desde + barra, cw, ColorCallWall, DashStyleHelper.Solid, 2, true);
-                Etiqueta(cw, "GEX Call wall " + P(cw), ColorCallWall, true);
-                Linea("PIFVG_gpw", desde, desde + barra, pw, ColorPutWall, DashStyleHelper.Solid, 2, true);
-                Etiqueta(pw, "GEX Put wall " + P(pw), ColorPutWall, true);
-                if (!double.IsNaN(r.Flip))
-                {
-                    Linea("PIFVG_gfl", desde, desde + barra, fl, ColorFlip, DashStyleHelper.Dash, 2, true);
-                    Etiqueta(fl, "GEX Gamma flip " + P(fl), ColorFlip, true);
-                }
-                for (int i = 0; i < r.Extra.Count; i++)
-                {
-                    double v = r.Extra[i] * gexRazon;
-                    Linea("PIFVG_gx" + i, desde, desde + barra, v, ConOpacidad(ColorGexOtros, 70), DashStyleHelper.Dot, 1, true);
-                    Etiqueta(v, "GEX " + P(v), ColorGexOtros, true);
-                }
-                string regimen = double.IsNaN(r.Flip) ? (r.Total >= 0 ? "gamma + (sin flip cercano)" : "gamma − (sin flip cercano)")
-                               : precio >= fl ? "sobre el flip: gamma + (rango, reversión)" : "bajo el flip: gamma − (tendencia, más volatilidad)";
-                string razon = "razón NQ/QQQ " + gexRazon.ToString("0.000", CultureInfo.InvariantCulture) + (GexRazonManual > 0 ? " (manual)" : " (NQ de las " + H(gexHora) + ")");
-                estado = "GEX QQQ " + H(r.Calculado) + " NY · " + razon + " · " + regimen
-                         + (error != null ? " · última descarga falló: " + error : "");
-            }
-            Draw.TextFixed(this, "PIFVG_gestado", estado, TextPosition.TopRight, TextoGrafico, fuente, Brushes.Transparent, Brushes.Transparent, 0);
-            tagsAhora.Add("PIFVG_gestado");
-        }
-
-        #region Propiedades
-
-        [Display(Name = "IFVG", Order = 1, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool MostrarIFVG { get; set; }
-        [Display(Name = "CISD", Order = 2, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool MostrarCISD { get; set; }
-        [Display(Name = "FVG 15m / 1h / 4h", Order = 3, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool MostrarHTF { get; set; }
-        [Display(Name = "Niveles de liquidez", Order = 4, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool MostrarNiveles { get; set; }
-        [Display(Name = "GEX", Order = 5, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool MostrarGEX { get; set; }
-        [Display(Name = "Sonido", Order = 6, GroupName = "0. Mostrar (también con los botones del gráfico)")]
-        public bool Sonido { get; set; }
-
-        [Display(Name = "Señal en 1m", Order = 1, GroupName = "1. Señal IFVG / CISD")]
-        public bool Usar1m { get; set; }
-        [Display(Name = "Señal en 2m", Order = 2, GroupName = "1. Señal IFVG / CISD")]
-        public bool Usar2m { get; set; }
-        [Display(Name = "Señal en 3m", Order = 3, GroupName = "1. Señal IFVG / CISD")]
-        public bool Usar3m { get; set; }
-        [Display(Name = "Señal en 4m", Order = 4, GroupName = "1. Señal IFVG / CISD")]
-        public bool Usar4m { get; set; }
-        [Display(Name = "Señal en 5m", Order = 5, GroupName = "1. Señal IFVG / CISD")]
-        public bool Usar5m { get; set; }
-        [Range(0, int.MaxValue)]
-        [Display(Name = "Tamaño mínimo del FVG (ticks)", Order = 6, GroupName = "1. Señal IFVG / CISD")]
-        public int FvgMinTicks { get; set; }
-        [Range(0, int.MaxValue)]
-        [Display(Name = "Máx. velas (de su TF) para invertirse; 0 = sin límite", Order = 7, GroupName = "1. Señal IFVG / CISD")]
-        public int MaxVelasInv { get; set; }
-        [Display(Name = "Límite uniforme en minutos (en vez de velas)", Order = 8, GroupName = "1. Señal IFVG / CISD")]
-        public bool LimiteEnMinutos { get; set; }
-        [Range(0, int.MaxValue)]
-        [Display(Name = "Máx. minutos para invertirse; 0 = sin límite", Order = 9, GroupName = "1. Señal IFVG / CISD")]
-        public int MaxMinutosInv { get; set; }
-        [Range(1, 10)]
-        [Display(Name = "Velas a cada lado para pivotes (CISD, swings 5m)", Order = 10, GroupName = "1. Señal IFVG / CISD")]
-        public int VelasPivote { get; set; }
-
-        [Display(Name = "Vista previa en formación (punteado)", Order = 1, GroupName = "2. Visual IFVG / CISD")]
-        public bool VistaPrevia { get; set; }
-        [Display(Name = "Dejar los IFVG muertos del día (gris)", Order = 2, GroupName = "2. Visual IFVG / CISD")]
-        public bool MostrarMuertos { get; set; }
-        [Range(0, int.MaxValue)]
-        [Display(Name = "Ocultar IFVG tras N minutos de invertirse (0 = mientras vivan)", Order = 3, GroupName = "2. Visual IFVG / CISD")]
-        public int OcultarIfvgMinutos { get; set; }
-        [Range(1, int.MaxValue)]
-        [Display(Name = "Deduplicar entre TFs: ventana (minutos)", Order = 4, GroupName = "2. Visual IFVG / CISD")]
-        public int DedupMinutos { get; set; }
-        [Range(0, double.MaxValue)]
-        [Display(Name = "Deduplicar CISD: niveles a menos de (puntos)", Order = 5, GroupName = "2. Visual IFVG / CISD")]
-        public double DedupPuntos { get; set; }
-        [Display(Name = "Marcar el CE (50 %)", Order = 6, GroupName = "2. Visual IFVG / CISD")]
-        public bool MarcarCE { get; set; }
-        [Range(6, 30)]
-        [Display(Name = "Tamaño del texto", Order = 7, GroupName = "2. Visual IFVG / CISD")]
-        public int TamanoTexto { get; set; }
-        [XmlIgnore]
-        [Display(Name = "Color alcista (IFVG y CISD)", Order = 8, GroupName = "2. Visual IFVG / CISD")]
-        public Brush ColorIfvgAlcista { get; set; }
-        [Browsable(false)]
-        public string ColorIfvgAlcistaSerializable { get { return Serialize.BrushToString(ColorIfvgAlcista); } set { ColorIfvgAlcista = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color bajista (IFVG y CISD)", Order = 9, GroupName = "2. Visual IFVG / CISD")]
-        public Brush ColorIfvgBajista { get; set; }
-        [Browsable(false)]
-        public string ColorIfvgBajistaSerializable { get { return Serialize.BrushToString(ColorIfvgBajista); } set { ColorIfvgBajista = Serialize.StringToBrush(value); } }
-
-        [Display(Name = "15m", Order = 1, GroupName = "3. FVG 15m / 1h / 4h")]
-        public bool Usar15m { get; set; }
-        [Display(Name = "1h", Order = 2, GroupName = "3. FVG 15m / 1h / 4h")]
-        public bool Usar1h { get; set; }
-        [Display(Name = "4h", Order = 3, GroupName = "3. FVG 15m / 1h / 4h")]
-        public bool Usar4h { get; set; }
-        [Range(0, 6)]
-        [Display(Name = "Los N más cercanos por arriba y por abajo", Order = 4, GroupName = "3. FVG 15m / 1h / 4h")]
-        public int HtfCercanos { get; set; }
-        [Range(0, 100)]
-        [Display(Name = "Opacidad del relleno (%)", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
-        public int HtfOpacidadRelleno { get; set; }
-        [XmlIgnore]
-        [Display(Name = "Color alcista", Order = 6, GroupName = "3. FVG 15m / 1h / 4h")]
-        public Brush ColorHtfAlcista { get; set; }
-        [Browsable(false)]
-        public string ColorHtfAlcistaSerializable { get { return Serialize.BrushToString(ColorHtfAlcista); } set { ColorHtfAlcista = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color bajista", Order = 7, GroupName = "3. FVG 15m / 1h / 4h")]
-        public Brush ColorHtfBajista { get; set; }
-        [Browsable(false)]
-        public string ColorHtfBajistaSerializable { get { return Serialize.BrushToString(ColorHtfBajista); } set { ColorHtfBajista = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color del contorno", Order = 8, GroupName = "3. FVG 15m / 1h / 4h")]
-        public Brush ColorContorno { get; set; }
-        [Browsable(false)]
-        public string ColorContornoSerializable { get { return Serialize.BrushToString(ColorContorno); } set { ColorContorno = Serialize.StringToBrush(value); } }
-        [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 15m (%)", Order = 9, GroupName = "3. FVG 15m / 1h / 4h")]
-        public int Contorno15m { get; set; }
-        [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 1h (%)", Order = 10, GroupName = "3. FVG 15m / 1h / 4h")]
-        public int Contorno1h { get; set; }
-        [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 4h (%)", Order = 11, GroupName = "3. FVG 15m / 1h / 4h")]
-        public int Contorno4h { get; set; }
-        [Display(Name = "Marcar el CE (50 %)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
-        public bool CeEnHtf { get; set; }
-
-        [Display(Name = "PDH / PDL", Order = 1, GroupName = "4. Liquidez")]
-        public bool MostrarPdhPdl { get; set; }
-        [Display(Name = "Sesiones (Asia, Londres, pre-market)", Order = 2, GroupName = "4. Liquidez")]
-        public bool MostrarSesiones { get; set; }
-        [Display(Name = "Swings 15m y EQH/EQL", Order = 3, GroupName = "4. Liquidez")]
-        public bool MostrarSwings15 { get; set; }
-        [Display(Name = "Swings 5m", Order = 4, GroupName = "4. Liquidez")]
-        public bool MostrarSwings5 { get; set; }
-        [Range(0, 10)]
-        [Display(Name = "Etiquetas en los N más cercanos por lado", Order = 5, GroupName = "4. Liquidez")]
-        public int EtiquetasNiveles { get; set; }
-        [Display(Name = "Asia (hora NY, HHMM-HHMM)", Order = 6, GroupName = "4. Liquidez")]
-        public string SesionAsia { get; set; }
-        [Display(Name = "Londres (hora NY, HHMM-HHMM)", Order = 7, GroupName = "4. Liquidez")]
-        public string SesionLondres { get; set; }
-        [Display(Name = "Pre-market NY (hora NY, HHMM-HHMM)", Order = 8, GroupName = "4. Liquidez")]
-        public string SesionPremarket { get; set; }
-
-        [Range(1, 240)]
-        [Display(Name = "Actualizar cada (minutos)", Order = 1, GroupName = "5. GEX (QQQ, CBOE)")]
-        public int GexMinutos { get; set; }
-        [Range(1, 365)]
-        [Display(Name = "Vencimientos incluidos (días)", Order = 2, GroupName = "5. GEX (QQQ, CBOE)")]
-        public int GexMaxDias { get; set; }
-        [Range(0, 10)]
-        [Display(Name = "Strikes extra con más GEX", Order = 3, GroupName = "5. GEX (QQQ, CBOE)")]
-        public int GexStrikesExtra { get; set; }
-        [Range(0, double.MaxValue)]
-        [Display(Name = "Razón NQ/QQQ manual (0 = automática)", Order = 4, GroupName = "5. GEX (QQQ, CBOE)")]
-        public double GexRazonManual { get; set; }
-        [XmlIgnore]
-        [Display(Name = "Color call wall", Order = 5, GroupName = "5. GEX (QQQ, CBOE)")]
-        public Brush ColorCallWall { get; set; }
-        [Browsable(false)]
-        public string ColorCallWallSerializable { get { return Serialize.BrushToString(ColorCallWall); } set { ColorCallWall = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color put wall", Order = 6, GroupName = "5. GEX (QQQ, CBOE)")]
-        public Brush ColorPutWall { get; set; }
-        [Browsable(false)]
-        public string ColorPutWallSerializable { get { return Serialize.BrushToString(ColorPutWall); } set { ColorPutWall = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color gamma flip", Order = 7, GroupName = "5. GEX (QQQ, CBOE)")]
-        public Brush ColorFlip { get; set; }
-        [Browsable(false)]
-        public string ColorFlipSerializable { get { return Serialize.BrushToString(ColorFlip); } set { ColorFlip = Serialize.StringToBrush(value); } }
-        [XmlIgnore]
-        [Display(Name = "Color otros strikes", Order = 8, GroupName = "5. GEX (QQQ, CBOE)")]
-        public Brush ColorGexOtros { get; set; }
-        [Browsable(false)]
-        public string ColorGexOtrosSerializable { get { return Serialize.BrushToString(ColorGexOtros); } set { ColorGexOtros = Serialize.StringToBrush(value); } }
-
-        [Display(Name = "Sonido IFVG (3m o más)", Order = 1, GroupName = "6. Sonido")]
-        public string SonidoIfvg { get; set; }
-        [Display(Name = "Sonido nivel GEX tocado", Order = 2, GroupName = "6. Sonido")]
-        public string SonidoGex { get; set; }
-        [Range(0, 240)]
-        [Display(Name = "Minutos entre avisos del mismo nivel GEX", Order = 3, GroupName = "6. Sonido")]
-        public int MinutosEntreAvisosGex { get; set; }
-
-        #endregion
-    }
-}
 
 #region NinjaScript generated code. Neither change nor remove.
 
