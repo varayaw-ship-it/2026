@@ -1,5 +1,5 @@
 ﻿// ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG · NinjaTrader 8 · v0.4 (2026-10-28)
+//  PRIMER IFVG · NinjaTrader 8 · v0.5 (2026-10-28)
 //  Versión para NinjaTrader del indicador "Primer IFVG" de TradingView (núcleo):
 //  IFVG de 1–5m con vista previa punteada, CISD, FVG de 15m/1h/4h con su CE,
 //  niveles de liquidez y niveles GEX de QQQ descargados solos de CBOE.
@@ -125,7 +125,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ColorIfvgAlcista = Congelar(Color.FromRgb(0x26, 0xA6, 0x9A));
                 ColorIfvgBajista = Congelar(Color.FromRgb(0xEF, 0x53, 0x50));
 
-                Usar15m = true; Usar1h = true; Usar4h = true; HtfCercanos = 3; HtfOpacidadRelleno = 7;
+                Usar15m = true; Usar1h = true; Usar4h = true; HtfCercanos = 3; HtfOpuestos = true; ConteoHtf = true; HtfOpacidadRelleno = 7;
                 ColorHtfAlcista = Congelar(Color.FromRgb(0x1B, 0x5E, 0x20));
                 ColorHtfBajista = Congelar(Color.FromRgb(0x80, 0x19, 0x22));
                 ColorContorno = Brushes.Black;
@@ -597,13 +597,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             var prevC = new List<CisdEvento>();
             List<FvgHtf> htf = null;
             List<Nivel> niveles = null;
+            string conteo = null;
             DateTime diaNy;
             lock (motorLock)
             {
                 conf = motor.IfvgCandidatos(ahoraNy, on, MostrarMuertos, OcultarIfvgMinutos);
                 cisdConf = motor.CisdCandidatos(on);
                 if (VistaPrevia) motor.Previa(precio, tUlt, on, DedupMinutos, DedupPuntos, conf, cisdConf, prevI, prevC);
-                if (MostrarHTF) htf = motor.HtfSeleccion(precio, Usar15m, Usar1h, Usar4h, HtfCercanos);
+                if (MostrarHTF) htf = motor.HtfSeleccion(precio, Usar15m, Usar1h, Usar4h, HtfCercanos, HtfOpuestos);
+                if (MostrarHTF && ConteoHtf) conteo = motor.HtfConteo(Usar15m, Usar1h, Usar4h);
                 if (MostrarNiveles) niveles = motor.Liq.Niveles.Where(L => !L.Oculto && !L.Tomado).ToList();
                 diaNy = motor.DayStart;
             }
@@ -613,7 +615,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (MostrarIFVG) DibujarIfvg(conf, prevI, tUlt);
             if (MostrarCISD) DibujarCisd(cisdConf, prevC);
             AplicarGex();
-            if (MostrarGEX) DibujarGex(precio, finNy, diaNy);
+            string estadoGex = MostrarGEX ? DibujarGex(precio, finNy, diaNy) : null;
+
+            // arriba a la derecha: estado del GEX y cuántos FVG 15m/1h/4h hay vivos
+            string estado = string.Join("\n", new[] { estadoGex, conteo == null ? null : "FVG vivos · " + conteo }.Where(x => x != null));
+            if (estado.Length > 0)
+            {
+                Draw.TextFixed(this, "PIFVG_estado", estado, TextPosition.TopRight, TextoGrafico, fuente, Brushes.Transparent, Brushes.Transparent, 0);
+                tagsAhora.Add("PIFVG_estado");
+            }
 
             foreach (string tag in tagsPrevios) if (!tagsAhora.Contains(tag)) RemoveDrawObject(tag);
             tagsPrevios = tagsAhora;
@@ -664,7 +674,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         // Como en TradingView: la caja sigue hasta el borde derecho del gráfico. Cada TF tiene su grosor y su opacidad de
-        // contorno, y su temporalidad escrita en el techo y en el piso (RotulosHtf). Solo va rellena la caja más angosta
+        // contorno, y su nombre ("FVG 15m #1 ▲") escrito en el techo y en el piso (RotulosHtf). Solo va rellena la caja más angosta
         // que contiene el precio; las demás quedan con su contorno, para que no se forme una mancha al superponerse.
         void DibujarHtf(List<FvgHtf> sel, double precio, DateTime finNy)
         {
@@ -672,6 +682,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             FvgHtf rellena = null;
             foreach (FvgHtf f in sel)
                 if (f.Bot <= precio && f.Top >= precio && (rellena == null || f.Top - f.Bot < rellena.Top - rellena.Bot)) rellena = f;
+            Dictionary<FvgHtf, int> num = Motor.NumerarHtf(sel);
             // 4h primero: sus rótulos quedan pegados a la última vela y los de 1h y 15m, si chocan, al lado
             foreach (FvgHtf f in sel.OrderBy(x => x.Tf == "4h" ? 0 : x.Tf == "1h" ? 1 : 2))
             {
@@ -679,7 +690,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 int op = f.Tf == "15m" ? Contorno15m : f.Tf == "1h" ? Contorno1h : Contorno4h;
                 int grosor = f.Tf == "15m" ? Grosor15m : f.Tf == "1h" ? Grosor1h : Grosor4h;
                 Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, derecha, f.Bot, ConOpacidad(ColorContorno, op), col, f == rellena ? HtfOpacidadRelleno : 0, DashStyleHelper.Solid, grosor);
-                cajasNuevas.Add(new CajaRotulo { Top = f.Top, Bot = f.Bot, Texto = f.Tf + (f.Dir == 1 ? " ▲" : " ▼"), Color = col });
+                cajasNuevas.Add(new CajaRotulo { Top = f.Top, Bot = f.Bot, Texto = "FVG " + f.Tf + " #" + num[f] + (f.Dir == 1 ? " ▲" : " ▼"), Color = col });
                 if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, f.TBirth + barra, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, true);
             }
         }
@@ -727,7 +738,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Etiqueta(L.P, NombreNivel(L.Tipo) + " " + P(L.P), ColorNivel(L.Tipo), true);
         }
 
-        void DibujarGex(double precio, DateTime finNy, DateTime diaNy)
+        // dibuja los niveles GEX y devuelve el texto de estado
+        string DibujarGex(double precio, DateTime finNy, DateTime diaNy)
         {
             string error;
             lock (gexLock) error = gexError;
@@ -760,8 +772,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 estado = "GEX QQQ " + H(r.Calculado) + " NY · " + razon + " · " + regimen
                          + (error != null ? " · última descarga falló: " + error : "");
             }
-            Draw.TextFixed(this, "PIFVG_gestado", estado, TextPosition.TopRight, TextoGrafico, fuente, Brushes.Transparent, Brushes.Transparent, 0);
-            tagsAhora.Add("PIFVG_gestado");
+            return estado;
         }
 
         #region Propiedades
@@ -842,43 +853,47 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0, 6)]
         [Display(Name = "Los N más cercanos por arriba y por abajo", Order = 4, GroupName = "3. FVG 15m / 1h / 4h")]
         public int HtfCercanos { get; set; }
+        [Display(Name = "Siempre el bajista más cercano por arriba y el alcista más cercano por abajo", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool HtfOpuestos { get; set; }
+        [Display(Name = "Mostrar cuántos hay vivos (arriba a la derecha)", Order = 6, GroupName = "3. FVG 15m / 1h / 4h")]
+        public bool ConteoHtf { get; set; }
         [Range(0, 100)]
-        [Display(Name = "Opacidad del relleno de la caja donde está el precio (%)", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Opacidad del relleno de la caja donde está el precio (%)", Order = 7, GroupName = "3. FVG 15m / 1h / 4h")]
         public int HtfOpacidadRelleno { get; set; }
         [XmlIgnore]
-        [Display(Name = "Color alcista", Order = 6, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Color alcista", Order = 8, GroupName = "3. FVG 15m / 1h / 4h")]
         public Brush ColorHtfAlcista { get; set; }
         [Browsable(false)]
         public string ColorHtfAlcistaSerializable { get { return Serialize.BrushToString(ColorHtfAlcista); } set { ColorHtfAlcista = Serialize.StringToBrush(value); } }
         [XmlIgnore]
-        [Display(Name = "Color bajista", Order = 7, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Color bajista", Order = 9, GroupName = "3. FVG 15m / 1h / 4h")]
         public Brush ColorHtfBajista { get; set; }
         [Browsable(false)]
         public string ColorHtfBajistaSerializable { get { return Serialize.BrushToString(ColorHtfBajista); } set { ColorHtfBajista = Serialize.StringToBrush(value); } }
         [XmlIgnore]
-        [Display(Name = "Color del contorno", Order = 8, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Color del contorno", Order = 10, GroupName = "3. FVG 15m / 1h / 4h")]
         public Brush ColorContorno { get; set; }
         [Browsable(false)]
         public string ColorContornoSerializable { get { return Serialize.BrushToString(ColorContorno); } set { ColorContorno = Serialize.StringToBrush(value); } }
         [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 15m (%)", Order = 9, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Opacidad del contorno 15m (%)", Order = 11, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Contorno15m { get; set; }
         [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 1h (%)", Order = 10, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Opacidad del contorno 1h (%)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Contorno1h { get; set; }
         [Range(0, 100)]
-        [Display(Name = "Opacidad del contorno 4h (%)", Order = 11, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Opacidad del contorno 4h (%)", Order = 13, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Contorno4h { get; set; }
         [Range(1, 6)]
-        [Display(Name = "Grosor del contorno 15m (px)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Grosor del contorno 15m (px)", Order = 14, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Grosor15m { get; set; }
         [Range(1, 6)]
-        [Display(Name = "Grosor del contorno 1h (px)", Order = 13, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Grosor del contorno 1h (px)", Order = 15, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Grosor1h { get; set; }
         [Range(1, 6)]
-        [Display(Name = "Grosor del contorno 4h (px)", Order = 14, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Grosor del contorno 4h (px)", Order = 16, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Grosor4h { get; set; }
-        [Display(Name = "Marcar el CE (50 %)", Order = 15, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Marcar el CE (50 %)", Order = 17, GroupName = "3. FVG 15m / 1h / 4h")]
         public bool CeEnHtf { get; set; }
 
         [Display(Name = "PDH / PDL", Order = 1, GroupName = "4. Liquidez")]
@@ -1428,8 +1443,10 @@ namespace PrimerIFVGNucleo
                 if (!TapadoCisd(e, cisdConf, dedupMin, dedupPts) && !TapadoCisd(e, todosC, dedupMin, dedupPts)) outCisd.Add(e);
         }
 
-        // FVG de fondo a dibujar: los que contienen el precio y los N más cercanos por arriba y por abajo
-        public List<FvgHtf> HtfSeleccion(double precio, bool on15, bool on60, bool on240, int nCercanos)
+        // FVG de fondo a dibujar: los que contienen el precio y los N más cercanos por arriba y por abajo. Con opuestos,
+        // además el bajista más cercano por arriba y el alcista más cercano por abajo: si no, en una caída los alcistas que
+        // el precio acaba de cruzar (siguen vivos hasta que cierre una vela de su TF) ocupan los N de arriba y tapan a los bajistas.
+        public List<FvgHtf> HtfSeleccion(double precio, bool on15, bool on60, bool on240, int nCercanos, bool opuestos)
         {
             var vivos = new List<FvgHtf>();
             if (on15) foreach (FvgHtf f in Htf15) if (f.Vivo) vivos.Add(f);
@@ -1449,7 +1466,49 @@ namespace PrimerIFVGNucleo
                 if (arriba != null) sel.Add(arriba);
                 if (abajo != null) sel.Add(abajo);
             }
+            if (opuestos)
+            {
+                FvgHtf baj = null, alc = null;
+                foreach (FvgHtf f in vivos)
+                {
+                    if (f.Dir == -1 && f.Bot > precio && (baj == null || f.Bot < baj.Bot)) baj = f;
+                    if (f.Dir == 1 && f.Top < precio && (alc == null || f.Top > alc.Top)) alc = f;
+                }
+                if (baj != null && !sel.Contains(baj)) sel.Add(baj);
+                if (alc != null && !sel.Contains(alc)) sel.Add(alc);
+            }
             return sel;
+        }
+
+        // Número de cada FVG dentro de su TF, de arriba hacia abajo (15m #1 es el de 15m más alto de los dibujados),
+        // para rotular su techo y su piso con el mismo nombre.
+        public static Dictionary<FvgHtf, int> NumerarHtf(List<FvgHtf> sel)
+        {
+            var num = new Dictionary<FvgHtf, int>();
+            foreach (IGrouping<string, FvgHtf> g in sel.GroupBy(f => f.Tf))
+            {
+                int k = 0;
+                foreach (FvgHtf f in g.OrderByDescending(f => f.Top).ThenByDescending(f => f.Bot)) num[f] = ++k;
+            }
+            return num;
+        }
+
+        // "15m 3▲ 1▼ · 1h 1▲ 0▼ · 4h 0▲ 0▼": FVG vivos de cada TF encendida, alcistas y bajistas
+        public string HtfConteo(bool on15, bool on60, bool on240)
+        {
+            var partes = new List<string>();
+            if (on15) partes.Add(Conteo("15m", Htf15));
+            if (on60) partes.Add(Conteo("1h", Htf60));
+            if (on240) partes.Add(Conteo("4h", Htf240));
+            return string.Join(" · ", partes);
+        }
+
+        static string Conteo(string tf, List<FvgHtf> lista)
+        {
+            int alc = 0, baj = 0;
+            foreach (FvgHtf f in lista)
+                if (f.Vivo) { if (f.Dir == 1) alc++; else baj++; }
+            return tf + " " + alc + "▲ " + baj + "▼";
         }
     }
 

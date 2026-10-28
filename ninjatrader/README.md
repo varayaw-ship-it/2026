@@ -7,8 +7,10 @@ Qué dibuja:
 - **IFVG de 1, 2, 3, 4 y 5 minutos**, con vista previa punteada mientras la vela todavía no cierra. La vista previa muestra los segundos que faltan para el cierre.
 - **CISD** de 1 a 5 minutos, también con vista previa y cuenta regresiva.
 - **FVG de 15m, 1h y 4h** con su CE (50 %). Como en TradingView, cada caja llega hasta el borde derecho. El contorno negro es más oscuro y más grueso cuanto mayor es la temporalidad: 1, 2 y 3 px.
-  - Cada borde (techo y piso) lleva escrita su temporalidad y dirección, por ejemplo `4h ▲`, a la derecha de la última vela. Si el borde queda fuera de la pantalla, el rótulo se queda en el borde de la pantalla.
+  - Cada caja tiene un nombre, por ejemplo `FVG 15m #1 ▲`, escrito en su techo y en su piso a la derecha de la última vela. El número va de arriba hacia abajo dentro de cada temporalidad, así se sabe qué techo va con qué piso. Si el borde queda fuera de la pantalla, el rótulo se queda en el borde de la pantalla.
   - Solo va rellena la caja más angosta que contiene el precio. Las demás quedan solo con su contorno, para que no se forme una mancha al superponerse.
+  - Se ven las que contienen el precio y las N más cercanas por arriba y por abajo. Además, siempre el bajista más cercano por arriba y el alcista más cercano por abajo. Sin eso, en una caída los alcistas que el precio acaba de cruzar (siguen vivos hasta que cierre una vela de su temporalidad) ocupan los N de arriba y tapan a los bajistas.
+  - Arriba a la derecha dice cuántos hay vivos de cada temporalidad y dirección, por ejemplo `FVG vivos · 15m 3▲ 1▼ · 1h 1▲ 0▼ · 4h 2▲ 0▼`.
 - **Niveles de liquidez**: PDH/PDL, Asia, Londres y pre-market, swings de 15m y 5m, y EQH/EQL. Un nivel desaparece cuando el precio lo barre.
 - **GEX de QQQ**, calculado solo desde CBOE cada 15 minutos y convertido a NQ: call wall, put wall, gamma flip y los strikes con más GEX.
 
@@ -38,7 +40,7 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 | 0. Mostrar | Lo mismo que los botones. Queda guardado con el workspace. |
 | 1. Señal IFVG / CISD | Temporalidades de señal (1–5m), tamaño mínimo del FVG, plazo para invertirse (en velas o en minutos uniformes) y velas a cada lado de los pivotes. |
 | 2. Visual IFVG / CISD | Vista previa, IFVG muertos en gris, ocultar IFVG tras N minutos, deduplicación entre temporalidades, CE, texto y colores. |
-| 3. FVG 15m / 1h / 4h | Cuáles se ven, cuántos por arriba y por abajo, relleno de la caja donde está el precio, color, opacidad y grosor del contorno por temporalidad, CE. |
+| 3. FVG 15m / 1h / 4h | Cuáles se ven, cuántos por arriba y por abajo, siempre el bajista y el alcista más cercanos, conteo de vivos, relleno de la caja donde está el precio, color, opacidad y grosor del contorno por temporalidad, CE. |
 | 4. Liquidez | Qué niveles se ven, cuántas etiquetas por lado y horario de las sesiones (hora NY). |
 | 5. GEX | Cada cuántos minutos se actualiza, vencimientos incluidos (45 días), strikes extra, razón NQ/QQQ manual y colores. |
 | 6. Sonido | Archivos .wav (de la carpeta `sounds` de NinjaTrader o con ruta completa) y minutos entre avisos del mismo nivel GEX. |
@@ -52,7 +54,7 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 
 ## Limitaciones de esta versión
 
-- Todavía no se ha compilado en NinjaTrader. La lógica tiene 84 comprobaciones, y el archivo completo compila contra una imitación de la API de NinjaTrader. Aun así, la primera compilación con F5 puede mostrar algún error de la API real.
+- Todavía no se ha compilado en NinjaTrader. La lógica tiene 94 comprobaciones, y el archivo completo compila contra una imitación de la API de NinjaTrader. Aun así, la primera compilación con F5 puede mostrar algún error de la API real.
 - El formato del JSON de CBOE no está documentado y no se ha probado con una descarga real.
 - Un IFVG de 1m en un gráfico de 5m puede verse muy angosto: su caja cabe dentro de una sola vela del gráfico.
 

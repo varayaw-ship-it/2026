@@ -48,6 +48,8 @@ static class Pruebas
         Correr("CISD bajista: open de la primera vela de la serie que creó el máximo", CisdBajista);
         Correr("Vista previa de IFVG y CISD con el precio en vivo", VistaPrevia);
         Correr("FVG de 15m: nace, se selecciona por cercanía y muere al cerrar a través", FvgQuinceMinutos);
+        Correr("FVG bajista de 15m: nace y muere al cerrar sobre su techo", FvgQuinceMinutosBajista);
+        Correr("FVG HTF: alcistas cruzados no tapan al bajista más cercano; conteo y numeración", SeleccionHtf);
         Correr("Liquidez: PDH/PDL al empezar el día, sesión de Asia y barrido", LiquidezDiaYSesion);
         Correr("Liquidez: swings iguales se vuelven EQH; pegados se quedan con el más extremo", LiquidezSwings);
         Correr("Deduplicación entre temporalidades", Deduplicacion);
@@ -229,12 +231,52 @@ static class Pruebas
         Bloque15(m, "10:00", 105.5, 107, 104, 106);
         FvgHtf f = m.Htf15.FirstOrDefault(x => x.Bot == 101 && x.Top == 104);
         Afirmar(f != null && f.Dir == 1 && f.Vivo && f.TBirth == H("09:30"), "FVG alcista de 15m 101–104 desde 09:30");
-        Afirmar(m.HtfSeleccion(106, true, false, false, 1).Contains(f), "es el más cercano por abajo");
-        Afirmar(!m.HtfSeleccion(106, false, true, true, 1).Contains(f), "con 15m apagado no se selecciona");
+        Afirmar(m.HtfSeleccion(106, true, false, false, 1, false).Contains(f), "es el más cercano por abajo");
+        Afirmar(!m.HtfSeleccion(106, false, true, true, 1, true).Contains(f), "con 15m apagado no se selecciona");
         Bloque15(m, "10:15", 106, 106, 100, 103);
         Afirmar(f.Vivo, "cierre de 15m en 103 (dentro) no lo mata");
         Bloque15(m, "10:30", 103, 103, 100, 100.5);
         Afirmar(!f.Vivo, "cierre de 15m bajo 101 lo mata");
+    }
+
+    static void FvgQuinceMinutosBajista()
+    {
+        var m = new Motor(new ConfigMotor());
+        Bloque15(m, "09:30", 106.5, 107, 106, 106.2);          // vela 1: mínimo 106
+        Bloque15(m, "09:45", 106, 106, 101, 101.5);
+        Bloque15(m, "10:00", 101.5, 103, 100, 100.5);          // vela 3: máximo 103 < 106 → FVG bajista 103–106
+        FvgHtf f = m.Htf15.FirstOrDefault(x => x.Bot == 103 && x.Top == 106);
+        Afirmar(f != null && f.Dir == -1 && f.Vivo && f.TBirth == H("09:30"), "FVG bajista de 15m 103–106 desde 09:30");
+        Afirmar(m.HtfSeleccion(100.5, true, false, false, 1, false).Contains(f), "es el más cercano por arriba");
+        Bloque15(m, "10:15", 100.5, 105, 100, 104);
+        Afirmar(f.Vivo, "cierre de 15m en 104 (dentro) no lo mata");
+        Bloque15(m, "10:30", 104, 107, 103.5, 106.5);
+        Afirmar(!f.Vivo, "cierre de 15m sobre 106 lo mata");
+    }
+
+    static void SeleccionHtf()
+    {
+        var m = new Motor(new ConfigMotor());
+        // caída: tres alcistas por arriba que el precio ya cruzó (vivos hasta que cierre su vela) y un bajista más arriba
+        var a1 = new FvgHtf { Id = 1, Tf = "15m", Dir = 1, Top = 110, Bot = 108 };
+        var a2 = new FvgHtf { Id = 2, Tf = "15m", Dir = 1, Top = 113, Bot = 111 };
+        var a3 = new FvgHtf { Id = 3, Tf = "1h", Dir = 1, Top = 116, Bot = 114 };
+        var b1 = new FvgHtf { Id = 4, Tf = "15m", Dir = -1, Top = 122, Bot = 120 };
+        var a4 = new FvgHtf { Id = 5, Tf = "15m", Dir = 1, Top = 95, Bot = 93 };
+        m.Htf15.AddRange(new[] { a1, a2, b1, a4 });
+        m.Htf60.Add(a3);
+        List<FvgHtf> sin = m.HtfSeleccion(100, true, true, true, 3, false);
+        Afirmar(!sin.Contains(b1), "con los 3 más cercanos, los alcistas de arriba tapan al bajista");
+        List<FvgHtf> con = m.HtfSeleccion(100, true, true, true, 3, true);
+        Afirmar(con.Contains(b1), "con opuestos aparece el bajista más cercano por arriba");
+        Afirmar(con.Count(f => f == a4) == 1 && con.Count == 5, "el alcista de abajo no se repite: " + con.Count);
+
+        Dictionary<FvgHtf, int> num = Motor.NumerarHtf(con);
+        Afirmar(num[b1] == 1 && num[a2] == 2 && num[a1] == 3 && num[a4] == 4 && num[a3] == 1, "15m numerados de arriba hacia abajo; 1h aparte");
+
+        Afirmar(m.HtfConteo(true, true, true) == "15m 3▲ 1▼ · 1h 1▲ 0▼ · 4h 0▲ 0▼", "conteo: " + m.HtfConteo(true, true, true));
+        b1.Vivo = false;
+        Afirmar(m.HtfConteo(true, false, false) == "15m 3▲ 0▼", "los muertos no cuentan");
     }
 
     // ── liquidez ────────────────────────────────────────────────────────────
@@ -334,7 +376,7 @@ static class Pruebas
                 List<Fvg> conf = m.IfvgCandidatos(t.AddMinutes(1), on, true, 0);
                 List<CisdEvento> cc = m.CisdCandidatos(on);
                 m.Previa(c + 3, t.AddMinutes(1), on, 10, 2, conf, cc, pi, pc);
-                m.HtfSeleccion(c, true, true, true, 3);
+                m.HtfSeleccion(c, true, true, true, 3, true);
             }
             t = t.AddMinutes(1);
         }
