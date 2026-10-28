@@ -1,5 +1,5 @@
 ﻿// ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG · NinjaTrader 8 · v0.2 (2026-10-28)
+//  PRIMER IFVG · NinjaTrader 8 · v0.3 (2026-10-28)
 //  Versión para NinjaTrader del indicador "Primer IFVG" de TradingView (núcleo):
 //  IFVG de 1–5m con vista previa punteada, CISD, FVG de 15m/1h/4h con su CE,
 //  niveles de liquidez y niveles GEX de QQQ descargados solos de CBOE.
@@ -74,8 +74,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         HashSet<string> tagsPrevios = new HashSet<string>(), tagsAhora = new HashSet<string>();
         SimpleFont fuente;
         TimeSpan barra = TimeSpan.FromMinutes(1);       // duración de la vela del gráfico
+        DateTime relojNy;                               // hora actual en Nueva York, para la cuenta regresiva
         // etiquetas pegadas al borde derecho del gráfico (niveles, GEX, FVG 15m/1h/4h), dibujadas en OnRender
         class EtiquetaDer { public double P; public string Texto; public Brush Color; public bool Arriba; }
+        class FilaRotulo { public float Y; public string Texto; public Brush Color; }
         List<EtiquetaDer> etiquetasNuevas = new List<EtiquetaDer>();
         volatile List<EtiquetaDer> etiquetasDerecha = new List<EtiquetaDer>();
         System.Windows.Threading.DispatcherTimer timer;
@@ -122,7 +124,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ColorHtfAlcista = Congelar(Color.FromRgb(0x1B, 0x5E, 0x20));
                 ColorHtfBajista = Congelar(Color.FromRgb(0x80, 0x19, 0x22));
                 ColorContorno = Brushes.Black;
-                Contorno15m = 20; Contorno1h = 45; Contorno4h = 75; CeEnHtf = true;
+                Contorno15m = 20; Contorno1h = 45; Contorno4h = 75; Grosor15m = 1; Grosor1h = 2; Grosor4h = 3; CeEnHtf = true;
 
                 MostrarPdhPdl = true; MostrarSesiones = true; MostrarSwings15 = true; MostrarSwings5 = true; EtiquetasNiveles = 3;
                 SesionAsia = "1900-0100"; SesionLondres = "0200-0600"; SesionPremarket = "0700-0930";
@@ -482,20 +484,28 @@ namespace NinjaTrader.NinjaScript.Indicators
             using (SharpDX.Direct2D1.Brush fondo = chartControl.Properties.ChartBackground.ToDxBrush(RenderTarget))
             {
                 fondo.Opacity = 0.75f;
-                var filas = new List<KeyValuePair<float, EtiquetaDer>>();
+                var filas = new List<FilaRotulo>();
                 foreach (EtiquetaDer e in lista)
                 {
                     float y = chartScale.GetYByValue(e.P);
-                    filas.Add(new KeyValuePair<float, EtiquetaDer>(e.Arriba ? y - formato.FontSize - 4 : y + 1, e));
+                    filas.Add(new FilaRotulo { Y = e.Arriba ? y - formato.FontSize - 4 : y + 1, Texto = e.Texto, Color = e.Color });
                 }
+                filas = filas.OrderBy(f => f.Y).ThenBy(f => f.Texto, StringComparer.Ordinal).ToList();
+                // del mismo color y a la misma altura (por ejemplo dos FVG que comparten borde): una sola línea
+                for (int i = filas.Count - 1; i > 0; i--)
+                    if (filas[i].Y - filas[i - 1].Y < 3 && ReferenceEquals(filas[i].Color, filas[i - 1].Color))
+                    {
+                        filas[i - 1].Texto += " · " + filas[i].Texto;
+                        filas.RemoveAt(i);
+                    }
                 float ocupadoHasta = float.MinValue;
-                foreach (KeyValuePair<float, EtiquetaDer> f in filas.OrderBy(x => x.Key))
+                foreach (FilaRotulo f in filas)
                 {
-                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Value.Texto, formato, 600, formato.FontSize + 6))
-                    using (SharpDX.Direct2D1.Brush pincel = f.Value.Color.ToDxBrush(RenderTarget))
+                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Texto, formato, 600, formato.FontSize + 6))
+                    using (SharpDX.Direct2D1.Brush pincel = f.Color.ToDxBrush(RenderTarget))
                     {
                         float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
-                        float y = Math.Max(f.Key, ocupadoHasta);
+                        float y = Math.Max(f.Y, ocupadoHasta);
                         if (y > ChartPanel.Y + ChartPanel.H || y + alto < ChartPanel.Y) continue;
                         float x = ChartPanel.X + ChartPanel.W - ancho - 6;
                         RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 2, y, ancho + 4, alto), fondo);
@@ -506,6 +516,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        // segundos que faltan para que cierre la vela en formación (con el reloj de NinjaTrader, que respeta Playback)
+        string Quedan(DateTime finNy)
+        {
+            int seg = (int)Math.Ceiling((finNy - relojNy).TotalSeconds);
+            return "quedan " + Math.Max(0, seg) + " s";
+        }
+
         static string P(double v) { return v.ToString("0.00", CultureInfo.InvariantCulture); }
         static string H(DateTime t) { return t.ToString("HH:mm", CultureInfo.InvariantCulture); }
 
@@ -514,6 +531,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (motor == null || CurrentBars[0] < 1 || CurrentBars[1] < 1) return;
             tagsAhora = new HashSet<string>();
             etiquetasNuevas = new List<EtiquetaDer>();
+            relojNy = ANy(Core.Globals.Now);
             double precio = Closes[0][0];
             DateTime ahoraNy = ANy(Times[1][0]);                 // cierre de la vela de 1m en curso
             DateTime tUlt = ahoraNy.AddMinutes(-1);              // su apertura
@@ -567,7 +585,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Brush col = dirI == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
                 DateTime fin = Motor.FinVelaAbierta(tUlt, f.Tf);
                 Caja("PIFVG_p" + f.Id, f.TBirth, f.Top, fin, f.Bot, ConOpacidad(col, 80), col, 0, DashStyleHelper.Dot, 1);
-                Texto("PIFVG_pt" + f.Id, fin, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m en formación · " + H(fin), col, dirI == 1 ? -10 : 10);
+                Texto("PIFVG_pt" + f.Id, fin, dirI == 1 ? f.Bot : f.Top, "IFVG " + f.Tf + "m en formación · " + Quedan(fin), col, dirI == 1 ? -10 : 10);
                 if (MarcarCE) Linea("PIFVG_pc" + f.Id, f.TBirth, fin, f.Ce, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
             }
         }
@@ -587,19 +605,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Brush col = e.Dir == 1 ? ColorIfvgAlcista : ColorIfvgBajista;
                 string id = "PIFVG_cp" + e.Tf + (e.Dir == 1 ? "a" : "b");
                 Linea(id, e.TStart, e.T, e.Lvl, col, DashStyleHelper.Dot, 1, false);
-                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m en formación · " + H(e.T), col, e.Dir == 1 ? -10 : 10);
+                Texto(id + "t", e.T, e.Lvl, "CISD " + e.Tf + "m en formación · " + Quedan(e.T), col, e.Dir == 1 ? -10 : 10);
             }
         }
 
+        // Como en TradingView: la caja sigue hasta el borde derecho del gráfico y el rótulo va adentro, en el borde
+        // de abajo si es alcista y en el de arriba si es bajista. Cada TF tiene su grosor y su opacidad de contorno.
         void DibujarHtf(List<FvgHtf> sel, DateTime finNy)
         {
+            DateTime derecha = finNy + TimeSpan.FromTicks(barra.Ticks * 500);     // más allá del margen derecho
             foreach (FvgHtf f in sel)
             {
                 Brush col = f.Dir == 1 ? ColorHtfAlcista : ColorHtfBajista;
                 int op = f.Tf == "15m" ? Contorno15m : f.Tf == "1h" ? Contorno1h : Contorno4h;
-                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, finNy, f.Bot, ConOpacidad(ColorContorno, op), col, HtfOpacidadRelleno, DashStyleHelper.Solid, 1);
-                Etiqueta(f.Dir == 1 ? f.Bot : f.Top, "FVG " + f.Tf, col, f.Dir != 1);
-                if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, finNy, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, false);
+                int grosor = f.Tf == "15m" ? Grosor15m : f.Tf == "1h" ? Grosor1h : Grosor4h;
+                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, derecha, f.Bot, ConOpacidad(ColorContorno, op), col, HtfOpacidadRelleno, DashStyleHelper.Solid, grosor);
+                Etiqueta(f.Dir == 1 ? f.Bot : f.Top, "FVG " + f.Tf, col, f.Dir == 1);
+                if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, f.TBirth + barra, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, true);
             }
         }
 
@@ -788,7 +810,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0, 100)]
         [Display(Name = "Opacidad del contorno 4h (%)", Order = 11, GroupName = "3. FVG 15m / 1h / 4h")]
         public int Contorno4h { get; set; }
-        [Display(Name = "Marcar el CE (50 %)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Range(1, 6)]
+        [Display(Name = "Grosor del contorno 15m (px)", Order = 12, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Grosor15m { get; set; }
+        [Range(1, 6)]
+        [Display(Name = "Grosor del contorno 1h (px)", Order = 13, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Grosor1h { get; set; }
+        [Range(1, 6)]
+        [Display(Name = "Grosor del contorno 4h (px)", Order = 14, GroupName = "3. FVG 15m / 1h / 4h")]
+        public int Grosor4h { get; set; }
+        [Display(Name = "Marcar el CE (50 %)", Order = 15, GroupName = "3. FVG 15m / 1h / 4h")]
         public bool CeEnHtf { get; set; }
 
         [Display(Name = "PDH / PDL", Order = 1, GroupName = "4. Liquidez")]

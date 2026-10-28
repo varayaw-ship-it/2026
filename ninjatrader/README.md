@@ -4,9 +4,9 @@ Indicador `PrimerIFVG.cs`, versión 0.1. Es la parte de análisis del indicador 
 
 Qué dibuja:
 
-- **IFVG de 1, 2, 3, 4 y 5 minutos**, con vista previa punteada mientras la vela todavía no cierra.
-- **CISD** de 1 a 5 minutos, también con vista previa.
-- **FVG de 15m, 1h y 4h** con su CE (50 %). El contorno negro es más oscuro cuanto mayor es la temporalidad.
+- **IFVG de 1, 2, 3, 4 y 5 minutos**, con vista previa punteada mientras la vela todavía no cierra. La vista previa muestra los segundos que faltan para el cierre.
+- **CISD** de 1 a 5 minutos, también con vista previa y cuenta regresiva.
+- **FVG de 15m, 1h y 4h** con su CE (50 %). Como en TradingView, cada caja llega hasta el borde derecho y lleva su rótulo adentro. El contorno negro es más oscuro y más grueso cuanto mayor es la temporalidad: 1, 2 y 3 px.
 - **Niveles de liquidez**: PDH/PDL, Asia, Londres y pre-market, swings de 15m y 5m, y EQH/EQL. Un nivel desaparece cuando el precio lo barre.
 - **GEX de QQQ**, calculado solo desde CBOE cada 15 minutos y convertido a NQ: call wall, put wall, gamma flip y los strikes con más GEX.
 
@@ -36,7 +36,7 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 | 0. Mostrar | Lo mismo que los botones. Queda guardado con el workspace. |
 | 1. Señal IFVG / CISD | Temporalidades de señal (1–5m), tamaño mínimo del FVG, plazo para invertirse (en velas o en minutos uniformes) y velas a cada lado de los pivotes. |
 | 2. Visual IFVG / CISD | Vista previa, IFVG muertos en gris, ocultar IFVG tras N minutos, deduplicación entre temporalidades, CE, texto y colores. |
-| 3. FVG 15m / 1h / 4h | Cuáles se ven, cuántos por arriba y por abajo, relleno, color y opacidad del contorno por temporalidad, CE. |
+| 3. FVG 15m / 1h / 4h | Cuáles se ven, cuántos por arriba y por abajo, relleno, color, opacidad y grosor del contorno por temporalidad, CE. |
 | 4. Liquidez | Qué niveles se ven, cuántas etiquetas por lado y horario de las sesiones (hora NY). |
 | 5. GEX | Cada cuántos minutos se actualiza, vencimientos incluidos (45 días), strikes extra, razón NQ/QQQ manual y colores. |
 | 6. Sonido | Archivos .wav (de la carpeta `sounds` de NinjaTrader o con ruta completa) y minutos entre avisos del mismo nivel GEX. |
