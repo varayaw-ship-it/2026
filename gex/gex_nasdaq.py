@@ -76,6 +76,11 @@ def gamma_bs(s: float, k: float, t: float, iv: float, r: float, q: float) -> flo
     return math.exp(-q * t) * math.exp(-0.5 * d1 * d1) / (math.sqrt(2 * math.pi) * s * raiz)
 
 
+def _anios(desde: datetime, hasta: datetime) -> float:
+    """Años entre dos instantes. Se pasan a UTC: restar dos fechas con la misma zona ignora el cambio de horario."""
+    return (hasta.astimezone(timezone.utc) - desde.astimezone(timezone.utc)).total_seconds() / (365.0 * 86400)
+
+
 def leer_cadena(crudo: dict, ahora: datetime, max_dias: float) -> tuple[float, list[Opcion]]:
     """Devuelve (spot, opciones vigentes) desde el JSON de CBOE."""
     data = crudo.get("data", crudo)
@@ -89,7 +94,7 @@ def leer_cadena(crudo: dict, ahora: datetime, max_dias: float) -> tuple[float, l
             continue
         _, fecha, tipo, strike = m.groups()
         venc = datetime(2000 + int(fecha[:2]), int(fecha[2:4]), int(fecha[4:]), 16, 0, tzinfo=NY)
-        t_anios = (venc - ahora).total_seconds() / (365.0 * 86400)
+        t_anios = _anios(ahora, venc)
         if t_anios <= 0 or t_anios * 365 > max_dias:
             continue
         oi = _num(_campo(o, "open_interest", "openInterest", "oi")) or 0.0

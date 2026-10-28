@@ -18,7 +18,7 @@ def cadena(spot=750.0, oi_call_760=20000, oi_put_740=24000, iv_pct=False, sin_ga
     ahora = datetime.strptime(AHORA, "%Y-%m-%d %H:%M").replace(tzinfo=g.NY)
     opts = []
     for venc in ("261030", "261106", "261120"):
-        t = (datetime(2026, int(venc[2:4]), int(venc[4:]), 16, tzinfo=g.NY) - ahora).total_seconds() / (365 * 86400)
+        t = g._anios(ahora, datetime(2026, int(venc[2:4]), int(venc[4:]), 16, tzinfo=g.NY))
         for k in range(700, 801, 5):
             for tipo in "CP":
                 oi = 1000
@@ -91,6 +91,12 @@ class Pruebas(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("Pegar en el indicador (fuente QQQ):", out.getvalue())
         self.assertIn("En NQ/MNQ (razón 41.4000)", out.getvalue())
+
+    def test_plazo_cruza_cambio_de_horario(self):
+        # del viernes 23/10 10:00 (EDT) al viernes 6/11 16:00 (EST): 14 días + 7 horas reales
+        ahora = datetime.strptime(AHORA, "%Y-%m-%d %H:%M").replace(tzinfo=g.NY)
+        venc = datetime(2026, 11, 6, 16, tzinfo=g.NY)
+        self.assertAlmostEqual(g._anios(ahora, venc) * 365 * 24, 14 * 24 + 7, places=9)
 
     def test_json_sin_precio(self):
         ahora = datetime.strptime(AHORA, "%Y-%m-%d %H:%M").replace(tzinfo=g.NY)
