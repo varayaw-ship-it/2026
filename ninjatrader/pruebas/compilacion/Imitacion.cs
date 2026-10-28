@@ -158,11 +158,13 @@ namespace NinjaTrader.Gui.Chart
     public enum ScaleJustification { Left, Right, Overlay }
     public class ChartControlProperties { public Brush ChartText { get; set; } public Brush ChartBackground { get; set; } }
     public class ChartScale { public int GetYByValue(double value) { return 0; } }
+    public class ChartBars { public int FromIndex { get; set; } public int ToIndex { get; set; } }
     public class ChartPanel { public int X { get; set; } public int Y { get; set; } public int W { get; set; } public int H { get; set; } }
     public class ChartControl : FrameworkElement
     {
         public Dispatcher Dispatcher { get; set; }
         public ChartControlProperties Properties { get; set; }
+        public int GetXByBarIndex(ChartBars chartBars, int barIndex) { return 0; }
     }
     public class ChartTab : Control { public ChartControl ChartControl { get; set; } }
     public class Chart : Window
@@ -227,6 +229,7 @@ namespace NinjaTrader.Gui.NinjaScript
         public ScaleJustification ScaleJustification { get; set; }
         public void ForceRefresh() { }
         public ChartPanel ChartPanel { get; set; }
+        public ChartBars ChartBars { get; set; }
         public bool IsInHitTest { get; set; }
         public SharpDX.Direct2D1.RenderTarget RenderTarget { get; set; }
         protected virtual void OnRender(ChartControl chartControl, ChartScale chartScale) { }

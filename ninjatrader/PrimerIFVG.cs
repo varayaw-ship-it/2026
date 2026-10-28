@@ -1,5 +1,5 @@
 ﻿// ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG · NinjaTrader 8 · v0.3 (2026-10-28)
+//  PRIMER IFVG · NinjaTrader 8 · v0.4 (2026-10-28)
 //  Versión para NinjaTrader del indicador "Primer IFVG" de TradingView (núcleo):
 //  IFVG de 1–5m con vista previa punteada, CISD, FVG de 15m/1h/4h con su CE,
 //  niveles de liquidez y niveles GEX de QQQ descargados solos de CBOE.
@@ -80,6 +80,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         class FilaRotulo { public float Y; public string Texto; public Brush Color; }
         List<EtiquetaDer> etiquetasNuevas = new List<EtiquetaDer>();
         volatile List<EtiquetaDer> etiquetasDerecha = new List<EtiquetaDer>();
+        // FVG 15m/1h/4h a rotular en su techo y en su piso, junto a la última vela (también en OnRender)
+        class CajaRotulo { public double Top, Bot; public string Texto; public Brush Color; }
+        class Hueco { public float X, Y, W, H; }
+        List<CajaRotulo> cajasNuevas = new List<CajaRotulo>();
+        volatile List<CajaRotulo> cajasHtf = new List<CajaRotulo>();
         System.Windows.Threading.DispatcherTimer timer;
         NinjaTrader.Gui.Chart.Chart chartWindow;
         readonly List<System.Windows.Controls.Button> botones = new List<System.Windows.Controls.Button>();
@@ -479,38 +484,85 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             base.OnRender(chartControl, chartScale);
             List<EtiquetaDer> lista = etiquetasDerecha;
-            if (IsInHitTest || lista == null || lista.Count == 0 || fuente == null) return;
+            List<CajaRotulo> cajas = cajasHtf;
+            bool hayLista = lista != null && lista.Count > 0, hayCajas = cajas != null && cajas.Count > 0 && ChartBars != null;
+            if (IsInHitTest || fuente == null || !(hayLista || hayCajas)) return;
             using (SharpDX.DirectWrite.TextFormat formato = fuente.ToDirectWriteTextFormat())
             using (SharpDX.Direct2D1.Brush fondo = chartControl.Properties.ChartBackground.ToDxBrush(RenderTarget))
             {
                 fondo.Opacity = 0.75f;
-                var filas = new List<FilaRotulo>();
-                foreach (EtiquetaDer e in lista)
+                if (hayLista) RotulosBordeDerecho(lista, chartScale, formato, fondo);
+                if (hayCajas) RotulosHtf(cajas, chartControl, chartScale, formato, fondo);
+            }
+        }
+
+        // Niveles y GEX: al borde derecho, sobre o bajo su precio; si se pisan, se corren hacia abajo.
+        void RotulosBordeDerecho(List<EtiquetaDer> lista, ChartScale chartScale, SharpDX.DirectWrite.TextFormat formato, SharpDX.Direct2D1.Brush fondo)
+        {
+            var filas = new List<FilaRotulo>();
+            foreach (EtiquetaDer e in lista)
+            {
+                float y = chartScale.GetYByValue(e.P);
+                filas.Add(new FilaRotulo { Y = e.Arriba ? y - formato.FontSize - 4 : y + 1, Texto = e.Texto, Color = e.Color });
+            }
+            filas = filas.OrderBy(f => f.Y).ThenBy(f => f.Texto, StringComparer.Ordinal).ToList();
+            // del mismo color y a la misma altura: una sola línea
+            for (int i = filas.Count - 1; i > 0; i--)
+                if (filas[i].Y - filas[i - 1].Y < 3 && ReferenceEquals(filas[i].Color, filas[i - 1].Color))
                 {
-                    float y = chartScale.GetYByValue(e.P);
-                    filas.Add(new FilaRotulo { Y = e.Arriba ? y - formato.FontSize - 4 : y + 1, Texto = e.Texto, Color = e.Color });
+                    filas[i - 1].Texto += " · " + filas[i].Texto;
+                    filas.RemoveAt(i);
                 }
-                filas = filas.OrderBy(f => f.Y).ThenBy(f => f.Texto, StringComparer.Ordinal).ToList();
-                // del mismo color y a la misma altura (por ejemplo dos FVG que comparten borde): una sola línea
-                for (int i = filas.Count - 1; i > 0; i--)
-                    if (filas[i].Y - filas[i - 1].Y < 3 && ReferenceEquals(filas[i].Color, filas[i - 1].Color))
-                    {
-                        filas[i - 1].Texto += " · " + filas[i].Texto;
-                        filas.RemoveAt(i);
-                    }
-                float ocupadoHasta = float.MinValue;
-                foreach (FilaRotulo f in filas)
+            float ocupadoHasta = float.MinValue;
+            foreach (FilaRotulo f in filas)
+            {
+                using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Texto, formato, 600, formato.FontSize + 6))
+                using (SharpDX.Direct2D1.Brush pincel = f.Color.ToDxBrush(RenderTarget))
                 {
-                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, f.Texto, formato, 600, formato.FontSize + 6))
-                    using (SharpDX.Direct2D1.Brush pincel = f.Color.ToDxBrush(RenderTarget))
+                    float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
+                    float y = Math.Max(f.Y, ocupadoHasta);
+                    if (y > ChartPanel.Y + ChartPanel.H || y + alto < ChartPanel.Y) continue;
+                    float x = ChartPanel.X + ChartPanel.W - ancho - 6;
+                    RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 2, y, ancho + 4, alto), fondo);
+                    RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, pincel);
+                    ocupadoHasta = y + alto;
+                }
+            }
+        }
+
+        // FVG 15m/1h/4h: su temporalidad escrita en el techo y en el piso de cada caja, por dentro, a la derecha de la
+        // última vela. Si un borde queda fuera de la pantalla, el rótulo se queda en el borde de la pantalla; si la caja
+        // es muy angosta, un solo rótulo al medio; si dos rótulos chocan, se ponen uno al lado del otro.
+        void RotulosHtf(List<CajaRotulo> cajas, ChartControl chartControl, ChartScale chartScale, SharpDX.DirectWrite.TextFormat formato, SharpDX.Direct2D1.Brush fondo)
+        {
+            float arriba = ChartPanel.Y, abajo = ChartPanel.Y + ChartPanel.H, derecha = ChartPanel.X + ChartPanel.W;
+            float x0 = chartControl.GetXByBarIndex(ChartBars, ChartBars.ToIndex) + 12;
+            var ocupados = new List<Hueco>();
+            foreach (CajaRotulo c in cajas)
+            {
+                float yTop = chartScale.GetYByValue(c.Top), yBot = chartScale.GetYByValue(c.Bot);
+                if (yBot < arriba || yTop > abajo) continue;
+                using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, c.Texto, formato, 300, formato.FontSize + 6))
+                using (SharpDX.Direct2D1.Brush pincel = c.Color.ToDxBrush(RenderTarget))
+                {
+                    float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
+                    float techo = Math.Max(yTop, arriba), piso = Math.Min(yBot, abajo);
+                    float yA = techo + 1, yB = piso - alto - 1;
+                    float[] ys = yB - yA < alto + 2 ? new[] { (techo + piso - alto) / 2 } : new[] { yA, yB };
+                    foreach (float y in ys)
                     {
-                        float alto = layout.Metrics.Height, ancho = layout.Metrics.Width;
-                        float y = Math.Max(f.Y, ocupadoHasta);
-                        if (y > ChartPanel.Y + ChartPanel.H || y + alto < ChartPanel.Y) continue;
-                        float x = ChartPanel.X + ChartPanel.W - ancho - 6;
+                        float x = x0;
+                        bool corrido = true;
+                        while (corrido)
+                        {
+                            corrido = false;
+                            foreach (Hueco h in ocupados)
+                                if (x < h.X + h.W && x + ancho > h.X && y < h.Y + h.H && y + alto > h.Y) { x = h.X + h.W + 6; corrido = true; }
+                        }
+                        x = Math.Min(x, derecha - ancho - 2);
+                        ocupados.Add(new Hueco { X = x - 2, Y = y, W = ancho + 4, H = alto });
                         RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 2, y, ancho + 4, alto), fondo);
                         RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, pincel);
-                        ocupadoHasta = y + alto;
                     }
                 }
             }
@@ -531,6 +583,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (motor == null || CurrentBars[0] < 1 || CurrentBars[1] < 1) return;
             tagsAhora = new HashSet<string>();
             etiquetasNuevas = new List<EtiquetaDer>();
+            cajasNuevas = new List<CajaRotulo>();
             relojNy = ANy(Core.Globals.Now);
             double precio = Closes[0][0];
             DateTime ahoraNy = ANy(Times[1][0]);                 // cierre de la vela de 1m en curso
@@ -555,7 +608,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 diaNy = motor.DayStart;
             }
 
-            if (htf != null) DibujarHtf(htf, finNy);
+            if (htf != null) DibujarHtf(htf, precio, finNy);
             if (niveles != null) DibujarNiveles(niveles, precio);
             if (MostrarIFVG) DibujarIfvg(conf, prevI, tUlt);
             if (MostrarCISD) DibujarCisd(cisdConf, prevC);
@@ -565,6 +618,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             foreach (string tag in tagsPrevios) if (!tagsAhora.Contains(tag)) RemoveDrawObject(tag);
             tagsPrevios = tagsAhora;
             etiquetasDerecha = etiquetasNuevas;
+            cajasHtf = cajasNuevas;
         }
 
         void DibujarIfvg(List<Fvg> conf, List<Fvg> previa, DateTime tUlt)
@@ -609,18 +663,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        // Como en TradingView: la caja sigue hasta el borde derecho del gráfico y el rótulo va adentro, en el borde
-        // de abajo si es alcista y en el de arriba si es bajista. Cada TF tiene su grosor y su opacidad de contorno.
-        void DibujarHtf(List<FvgHtf> sel, DateTime finNy)
+        // Como en TradingView: la caja sigue hasta el borde derecho del gráfico. Cada TF tiene su grosor y su opacidad de
+        // contorno, y su temporalidad escrita en el techo y en el piso (RotulosHtf). Solo va rellena la caja más angosta
+        // que contiene el precio; las demás quedan con su contorno, para que no se forme una mancha al superponerse.
+        void DibujarHtf(List<FvgHtf> sel, double precio, DateTime finNy)
         {
             DateTime derecha = finNy + TimeSpan.FromTicks(barra.Ticks * 500);     // más allá del margen derecho
+            FvgHtf rellena = null;
             foreach (FvgHtf f in sel)
+                if (f.Bot <= precio && f.Top >= precio && (rellena == null || f.Top - f.Bot < rellena.Top - rellena.Bot)) rellena = f;
+            // 4h primero: sus rótulos quedan pegados a la última vela y los de 1h y 15m, si chocan, al lado
+            foreach (FvgHtf f in sel.OrderBy(x => x.Tf == "4h" ? 0 : x.Tf == "1h" ? 1 : 2))
             {
                 Brush col = f.Dir == 1 ? ColorHtfAlcista : ColorHtfBajista;
                 int op = f.Tf == "15m" ? Contorno15m : f.Tf == "1h" ? Contorno1h : Contorno4h;
                 int grosor = f.Tf == "15m" ? Grosor15m : f.Tf == "1h" ? Grosor1h : Grosor4h;
-                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, derecha, f.Bot, ConOpacidad(ColorContorno, op), col, HtfOpacidadRelleno, DashStyleHelper.Solid, grosor);
-                Etiqueta(f.Dir == 1 ? f.Bot : f.Top, "FVG " + f.Tf, col, f.Dir == 1);
+                Caja("PIFVG_h" + f.Id, f.TBirth, f.Top, derecha, f.Bot, ConOpacidad(ColorContorno, op), col, f == rellena ? HtfOpacidadRelleno : 0, DashStyleHelper.Solid, grosor);
+                cajasNuevas.Add(new CajaRotulo { Top = f.Top, Bot = f.Bot, Texto = f.Tf + (f.Dir == 1 ? " ▲" : " ▼"), Color = col });
                 if (CeEnHtf) Linea("PIFVG_hc" + f.Id, f.TBirth, f.TBirth + barra, (f.Top + f.Bot) / 2, ConOpacidad(col, 60), DashStyleHelper.Dash, 1, true);
             }
         }
@@ -784,7 +843,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Los N más cercanos por arriba y por abajo", Order = 4, GroupName = "3. FVG 15m / 1h / 4h")]
         public int HtfCercanos { get; set; }
         [Range(0, 100)]
-        [Display(Name = "Opacidad del relleno (%)", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
+        [Display(Name = "Opacidad del relleno de la caja donde está el precio (%)", Order = 5, GroupName = "3. FVG 15m / 1h / 4h")]
         public int HtfOpacidadRelleno { get; set; }
         [XmlIgnore]
         [Display(Name = "Color alcista", Order = 6, GroupName = "3. FVG 15m / 1h / 4h")]
