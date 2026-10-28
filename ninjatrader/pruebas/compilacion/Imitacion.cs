@@ -11,6 +11,7 @@ namespace System.Windows
     public class Window : FrameworkElement { public static Window GetWindow(DependencyObject d) { return null; } }
     public struct Thickness { public Thickness(double l, double t, double r, double b) { } }
     public enum TextAlignment { Left, Right, Center, Justify }
+    public struct Point { public Point(double x, double y) { X = x; Y = y; } public double X { get; set; } public double Y { get; set; } }
     public delegate void RoutedEventHandler(object sender, RoutedEventArgs e);
     public class RoutedEventArgs : EventArgs { }
 }
@@ -30,6 +31,12 @@ namespace System.Windows.Media
     {
         public static SolidColorBrush Black, Gray, White, Orange, Transparent;
     }
+}
+
+namespace System.Windows.Input
+{
+    public class Cursor { }
+    public static class Cursors { public static Cursor Pen, SizeAll, SizeNS, No, Arrow, Hand; }
 }
 
 namespace System.Windows.Threading
@@ -92,8 +99,13 @@ namespace SharpDX.DirectWrite
 namespace SharpDX.Direct2D1
 {
     public class Brush : IDisposable { public float Opacity { get; set; } public void Dispose() { } }
+    public enum AntialiasMode { PerPrimitive, Aliased }
+    public struct RoundedRectangle { public SharpDX.RectangleF Rect; public float RadiusX, RadiusY; }
     public class RenderTarget
     {
+        public AntialiasMode AntialiasMode { get; set; }
+        public void DrawLine(SharpDX.Vector2 p0, SharpDX.Vector2 p1, Brush brush, float strokeWidth) { }
+        public void FillRoundedRectangle(RoundedRectangle roundedRect, Brush brush) { }
         public void FillRectangle(SharpDX.RectangleF rect, Brush brush) { }
         public void DrawTextLayout(SharpDX.Vector2 origin, SharpDX.DirectWrite.TextLayout textLayout, Brush defaultForegroundBrush) { }
     }
@@ -157,7 +169,7 @@ namespace NinjaTrader.Gui.Chart
     using System.Windows.Threading;
     public enum ScaleJustification { Left, Right, Overlay }
     public class ChartControlProperties { public Brush ChartText { get; set; } public Brush ChartBackground { get; set; } }
-    public class ChartScale { public int GetYByValue(double value) { return 0; } }
+    public class ChartScale { public int GetYByValue(double value) { return 0; } public int PanelIndex { get; set; } }
     public class ChartBars { public int FromIndex { get; set; } public int ToIndex { get; set; } }
     public class ChartPanel { public int X { get; set; } public int Y { get; set; } public int W { get; set; } public int H { get; set; } }
     public class ChartControl : FrameworkElement
@@ -165,6 +177,8 @@ namespace NinjaTrader.Gui.Chart
         public Dispatcher Dispatcher { get; set; }
         public ChartControlProperties Properties { get; set; }
         public int GetXByBarIndex(ChartBars chartBars, int barIndex) { return 0; }
+        public System.Collections.Generic.List<ChartPanel> ChartPanels { get; set; }
+        public SharpDX.Direct2D1.Brush SelectionBrush { get; set; }
     }
     public class ChartTab : Control { public ChartControl ChartControl { get; set; } }
     public class Chart : Window
@@ -256,7 +270,49 @@ namespace NinjaTrader.NinjaScript.DrawingTools
     using NinjaTrader.Gui.Tools;
 
     public enum TextPosition { BottomLeft, BottomRight, Center, TopLeft, TopRight }
-    public abstract class DrawingTool { public bool IsLocked { get; set; } public bool IsAutoScale { get; set; } }
+    public enum DrawingState { Building, Normal, Editing, Moving }
+    public class MasterInstrument
+    {
+        public string Name { get; set; }
+        public double TickSize { get; set; }
+        public double PointValue { get; set; }
+        public double RoundToTickSize(double price) { return price; }
+    }
+    public class InstrumentImitado { public MasterInstrument MasterInstrument { get; set; } }
+    public class Adjunto { public InstrumentImitado Instrument { get; set; } }
+    public class ChartAnchor
+    {
+        public bool IsBrowsable { get; set; }
+        public bool IsEditing { get; set; }
+        public DrawingTool DrawingTool { get; set; }
+        public string DisplayName { get; set; }
+        public double Price { get; set; }
+        public DateTime Time { get; set; }
+        public void CopyDataValues(ChartAnchor destino) { }
+        public Point GetPoint(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s) { return new Point(); }
+        public void MoveAnchor(ChartAnchor inicial, ChartAnchor dataPoint, NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, DrawingTool d) { }
+    }
+    public abstract class DrawingTool : NinjaScriptBase, IDisposable
+    {
+        public bool IsLocked { get; set; }
+        public bool IsAutoScale { get; set; }
+        public bool IsSelected { get; set; }
+        public bool IsInHitTest { get; set; }
+        public DrawingState DrawingState { get; set; }
+        public ChartAnchor InitialMouseDownAnchor { get; set; }
+        public Adjunto AttachedTo { get; set; }
+        public SharpDX.Direct2D1.RenderTarget RenderTarget { get; set; }
+        public virtual System.Collections.Generic.IEnumerable<ChartAnchor> Anchors { get { return new ChartAnchor[0]; } }
+        public virtual System.Windows.Input.Cursor GetCursor(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, Point point) { return null; }
+        public virtual Point[] GetSelectionPoints(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartScale s) { return null; }
+        public virtual bool IsVisibleOnChart(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartScale s, DateTime first, DateTime last) { return true; }
+        public virtual void OnMouseDown(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, ChartAnchor dataPoint) { }
+        public virtual void OnMouseMove(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, ChartAnchor dataPoint) { }
+        public virtual void OnMouseUp(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, ChartAnchor dataPoint) { }
+        public virtual void OnRender(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartScale s) { }
+        protected ChartAnchor GetClosestAnchor(NinjaTrader.Gui.Chart.ChartControl c, NinjaTrader.Gui.Chart.ChartPanel p, NinjaTrader.Gui.Chart.ChartScale s, double sensibilidad, Point point) { return null; }
+        public void Dispose() { }
+    }
     public abstract class ShapeBase : DrawingTool { public Stroke OutlineStroke { get; set; } }
     public class Rectangle : ShapeBase { }
     public class Line : DrawingTool { }

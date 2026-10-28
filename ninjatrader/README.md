@@ -66,3 +66,20 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 2. Extrae el núcleo (entre `NUCLEO INICIO` y `NUCLEO FIN`) y corre `pruebas/Pruebas.cs`.
 
 `pruebas/generar_cadena.py` vuelve a generar las cadenas de opciones sintéticas y los valores de referencia de la calculadora en Python.
+
+## Herramienta de dibujo Riesgo R1–R5 (`RiesgoR.cs`)
+
+Es como la herramienta Risk Reward de NinjaTrader, pero con los objetivos R1 a R5:
+- Zona de riesgo en rojo.
+- Zonas de beneficio en verde, más intensas a medida que sube el R.
+- Una etiqueta por línea con precio, puntos y dinero, según los contratos que indiques.
+
+**Instalar:** NinjaScript Editor → clic derecho en **DrawingTools** → **New Drawing Tool**, con el nombre `RiesgoR` → **Generate**. Reemplazar todo el contenido por `RiesgoR.cs` y apretar **F5**.
+
+**Usar:**
+1. En el gráfico, abrir el menú de herramientas de dibujo (el lápiz) → **Riesgo R1–R5**.
+2. Primer clic en la entrada, segundo clic en el stop. Si el stop queda debajo es un largo; si queda arriba, un corto.
+3. Para ajustar, arrastrar las anclas. Para mover todo, arrastrar la caja.
+
+En las propiedades se elige hasta qué R mostrar, los contratos, qué datos lleva cada etiqueta, la opacidad, la letra y los colores.
+

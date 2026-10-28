@@ -13,6 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../PrimerIFVG.cs" />
+    <Compile Include="../../RiesgoR.cs" />
     <Compile Include="Imitacion.cs" />
   </ItemGroup>
 </Project>
