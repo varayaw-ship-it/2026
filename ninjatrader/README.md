@@ -54,7 +54,7 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 
 ## Limitaciones de esta versión
 
-- Todavía no se ha compilado en NinjaTrader. La lógica tiene 94 comprobaciones, y el archivo completo compila contra una imitación de la API de NinjaTrader. Aun así, la primera compilación con F5 puede mostrar algún error de la API real.
+- Compila y corre en NinjaTrader 8 desde la v0.2. La lógica tiene 94 comprobaciones, y cada cambio se compila primero contra una imitación de la API de NinjaTrader, pero algunos detalles de dibujo solo se pueden ver en el gráfico real.
 - El formato del JSON de CBOE no está documentado y no se ha probado con una descarga real.
 - Un IFVG de 1m en un gráfico de 5m puede verse muy angosto: su caja cabe dentro de una sola vela del gráfico.
 
