@@ -111,7 +111,25 @@ namespace SharpDX.Direct2D1
     }
 }
 
-namespace NinjaTrader.Cbi { }
+namespace NinjaTrader.Cbi
+{
+    public enum MarketPosition { Flat, Long, Short }
+    public class MasterInstrument
+    {
+        public string Name { get; set; }
+        public double TickSize { get; set; }
+        public double PointValue { get; set; }
+        public double RoundToTickSize(double price) { return price; }
+    }
+    public class Instrument { public string FullName { get; set; } public MasterInstrument MasterInstrument { get; set; } }
+    public class Position { public Instrument Instrument { get; set; } public int Quantity { get; set; } public MarketPosition MarketPosition { get; set; } }
+    public class Account
+    {
+        public static readonly System.Collections.Generic.List<Account> All = new System.Collections.Generic.List<Account>();
+        public string Name { get; set; }
+        public System.Collections.Generic.List<Position> Positions { get; set; }
+    }
+}
 
 namespace NinjaTrader.Core
 {
@@ -271,15 +289,7 @@ namespace NinjaTrader.NinjaScript.DrawingTools
 
     public enum TextPosition { BottomLeft, BottomRight, Center, TopLeft, TopRight }
     public enum DrawingState { Building, Normal, Editing, Moving }
-    public class MasterInstrument
-    {
-        public string Name { get; set; }
-        public double TickSize { get; set; }
-        public double PointValue { get; set; }
-        public double RoundToTickSize(double price) { return price; }
-    }
-    public class InstrumentImitado { public MasterInstrument MasterInstrument { get; set; } }
-    public class Adjunto { public InstrumentImitado Instrument { get; set; } }
+    public class Adjunto { public NinjaTrader.Cbi.Instrument Instrument { get; set; } }
     public class ChartAnchor
     {
         public bool IsBrowsable { get; set; }

@@ -69,10 +69,11 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 
 ## Herramienta de dibujo Riesgo R1–R5 (`RiesgoR.cs`)
 
-Es como la herramienta Risk Reward de NinjaTrader, pero con los objetivos R1 a R5:
+Es como la herramienta Risk Reward de NinjaTrader, pero con los objetivos R1 a R5 y un diseño mínimo:
 - Zona de riesgo en rojo.
 - Zonas de beneficio en verde, más intensas a medida que sube el R.
-- Una etiqueta por línea con precio, puntos y dinero, según los contratos que indiques.
+- Textos escritos dentro de la caja: el stop y cada R con los dólares (`Stop · −166,50 $`, `R2 · +333,00 $`), y la entrada con el lado y los contratos (`Corto · 3 MNQ abiertos`). El precio y los puntos se pueden agregar en los ajustes.
+- Si hay una posición abierta en el instrumento del gráfico, en cualquier cuenta conectada, calcula con sus contratos. Si no hay, usa los contratos de los ajustes.
 
 **Instalar:** NinjaScript Editor → clic derecho en **DrawingTools** → **New Drawing Tool**, con el nombre `RiesgoR` → **Generate**. Reemplazar todo el contenido por `RiesgoR.cs` y apretar **F5**.
 
@@ -80,6 +81,3 @@ Es como la herramienta Risk Reward de NinjaTrader, pero con los objetivos R1 a R
 1. En el gráfico, abrir el menú de herramientas de dibujo (el lápiz) → **Riesgo R1–R5**.
 2. Primer clic en la entrada, segundo clic en el stop. Si el stop queda debajo es un largo; si queda arriba, un corto.
 3. Para ajustar, arrastrar las anclas. Para mover todo, arrastrar la caja.
-
-En las propiedades se elige hasta qué R mostrar, los contratos, qué datos lleva cada etiqueta, la opacidad, la letra y los colores.
-

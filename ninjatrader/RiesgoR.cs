@@ -1,7 +1,9 @@
 // ══════════════════════════════════════════════════════════════════════════════
-//  RIESGO R1–R5 · herramienta de dibujo para NinjaTrader 8 · v0.1 (2026-10-28)
+//  RIESGO R1–R5 · herramienta de dibujo para NinjaTrader 8 · v0.2 (2026-10-28)
 //  Como la herramienta Risk Reward de NinjaTrader, pero con los objetivos R1 a R5,
-//  zonas con degradado y etiquetas con precio, puntos y dinero.
+//  zonas con degradado y textos mínimos escritos dentro de la caja: cuánto se
+//  pierde en el stop y cuánto se gana en cada R. Si hay una posición abierta en
+//  el instrumento, usa sus contratos; si no, los de los ajustes.
 //
 //  USO
 //  · En el gráfico: menú de herramientas de dibujo (el lápiz) → "Riesgo R1–R5".
@@ -26,6 +28,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml.Serialization;
+using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
@@ -49,8 +52,6 @@ namespace NinjaTrader.NinjaScript.DrawingTools
             public float[] YNiveles;
         }
 
-        class Pastilla { public float Y; public string Texto; public Brush Color; }
-
         [Display(Order = 1)]
         public ChartAnchor EntradaAnchor { get; set; }
 
@@ -70,8 +71,9 @@ namespace NinjaTrader.NinjaScript.DrawingTools
 
                 NivelesR = 5;
                 Contratos = 1;
-                MostrarPrecio = true;
-                MostrarPuntos = true;
+                UsarPosicion = true;
+                MostrarPrecio = false;
+                MostrarPuntos = false;
                 MostrarDinero = true;
                 OpacidadZona = 18;
                 Fuente = new SimpleFont("Segoe UI", 11);
@@ -113,13 +115,32 @@ namespace NinjaTrader.NinjaScript.DrawingTools
 
         static string Dinero(double v) { return v.ToString("N2", CultureInfo.CurrentCulture) + " $"; }
 
-        // "R3 · 29725,25 · +37,5 pts · +75,00 $" (cada parte se puede apagar)
-        string TextoNivel(string nombre, double precio, double distancia, string signo)
+        // Contratos de la posición abierta en el instrumento del gráfico, en cualquier cuenta conectada
+        // (si hay varias con posición, la mayor). 0 si no hay posición.
+        int ContratosEnPosicion()
+        {
+            if (AttachedTo == null || AttachedTo.Instrument == null) return 0;
+            string nombre = AttachedTo.Instrument.FullName;
+            int contratos = 0;
+            try
+            {
+                lock (Account.All)
+                    foreach (Account cuenta in Account.All)
+                        foreach (Position pos in cuenta.Positions)
+                            if (pos.MarketPosition != MarketPosition.Flat && pos.Instrument != null && pos.Instrument.FullName == nombre)
+                                contratos = Math.Max(contratos, pos.Quantity);
+            }
+            catch (InvalidOperationException) { }       // la lista cambió mientras se leía: se usa lo que se alcanzó a leer
+            return contratos;
+        }
+
+        // "R3 · +75,00 $" (el precio y los puntos se pueden agregar en los ajustes)
+        string TextoNivel(string nombre, double precio, double distancia, string signo, int contratos)
         {
             var partes = new List<string> { nombre };
             if (MostrarPrecio) partes.Add(FormatoPrecio(precio));
             if (MostrarPuntos) partes.Add(signo + Puntos(distancia));
-            if (MostrarDinero && ValorPunto > 0) partes.Add(signo + Dinero(distancia * ValorPunto * Contratos));
+            if (MostrarDinero && ValorPunto > 0) partes.Add(signo + Dinero(distancia * ValorPunto * contratos));
             return string.Join(" · ", partes);
         }
 
@@ -290,7 +311,7 @@ namespace NinjaTrader.NinjaScript.DrawingTools
                 for (int k = 1; k <= n; k++) Linea(ColorObjetivo, k == n ? 1f : 0.75f, k == n ? 2f : 1f, g.Izq, g.Der, g.YNiveles[k]);
                 Linea(ColorEntrada, 1f, 2f, g.Izq, g.Der, g.YEntrada);
 
-                DibujarPastillas(chartPanel, g);
+                DibujarTextos(g);
             }
             finally
             {
@@ -317,54 +338,48 @@ namespace NinjaTrader.NinjaScript.DrawingTools
             }
         }
 
-        // Una pastilla de color por línea, a la derecha de la caja (o adentro si no cabe). Si la caja es baja y las
-        // pastillas no caben una por R, se muestran cada tantos R (siempre la última); si se pisan, se corren hacia abajo.
-        void DibujarPastillas(ChartPanel chartPanel, Geometria g)
+        // Textos dentro de la caja, pegados a su línea y del lado de la entrada: el stop y los R a la derecha, la entrada
+        // a la izquierda. Si la caja es baja y no caben uno por R, se escriben cada tantos R (siempre el último).
+        void DibujarTextos(Geometria g)
         {
             int n = g.Niveles.Length - 1;
+            int contratos = Contratos;
+            bool enPosicion = false;
+            if (UsarPosicion)
+            {
+                int abiertos = ContratosEnPosicion();
+                if (abiertos > 0) { contratos = abiertos; enPosicion = true; }
+            }
             using (SharpDX.DirectWrite.TextFormat formato = Fuente.ToDirectWriteTextFormat())
-            using (SharpDX.Direct2D1.Brush blanco = Brushes.White.ToDxBrush(RenderTarget))
             {
                 float alto;
                 using (var muestra = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, "R5", formato, 200, 100))
-                    alto = muestra.Metrics.Height + 4;
+                    alto = muestra.Metrics.Height;
 
-                var lista = new List<Pastilla>
-                {
-                    new Pastilla { Y = g.YStop, Texto = TextoNivel("Stop", g.Stop, g.Riesgo, "−"), Color = ColorStop },
-                    new Pastilla
-                    {
-                        Y = g.YEntrada, Color = ColorEntrada,
-                        Texto = (g.Dir == 1 ? "Largo" : "Corto") + (MostrarPrecio ? " · " + FormatoPrecio(g.Entrada) : "") + " · " + Contratos + " " + Simbolo
-                    }
-                };
+                bool riesgoAbajo = g.YStop >= g.YEntrada;           // en pantalla, el stop está debajo de la entrada (largo)
+                Rotular(formato, TextoNivel("Stop", g.Stop, g.Riesgo, "−", contratos), ColorStop, g, g.YStop, !riesgoAbajo, true, alto);
+                string entrada = (g.Dir == 1 ? "Largo" : "Corto") + " · " + contratos + " " + Simbolo
+                                 + (enPosicion ? (contratos == 1 ? " abierto" : " abiertos") : "")
+                                 + (MostrarPrecio ? " · " + FormatoPrecio(g.Entrada) : "");
+                Rotular(formato, entrada, ColorEntrada, g, g.YEntrada, riesgoAbajo, false, alto);
+
                 float pxPorR = Math.Abs(g.YEntrada - g.YStop);
                 int paso = pxPorR <= 0 ? n : Math.Max(1, (int)Math.Ceiling((alto + 2) / pxPorR));
                 for (int k = 1; k <= n; k++)
                     if (k % paso == 0 || k == n)
-                        lista.Add(new Pastilla { Y = g.YNiveles[k], Texto = TextoNivel("R" + k, g.Niveles[k], k * g.Riesgo, "+"), Color = ColorObjetivo });
+                        Rotular(formato, TextoNivel("R" + k, g.Niveles[k], k * g.Riesgo, "+", contratos), ColorObjetivo, g, g.YNiveles[k], riesgoAbajo, true, alto);
+            }
+        }
 
-                float bordeDerecho = chartPanel.X + chartPanel.W;
-                float ocupadoHasta = float.MinValue;
-                foreach (Pastilla p in lista.OrderBy(x => x.Y))
-                {
-                    using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, p.Texto, formato, 1000, 100))
-                    using (SharpDX.Direct2D1.Brush fondo = p.Color.ToDxBrush(RenderTarget))
-                    {
-                        float w = layout.Metrics.Width + 12;
-                        float x = g.Der + 8 + w <= bordeDerecho ? g.Der + 8 : g.Der - w - 6;
-                        float y = Math.Max(p.Y - alto / 2, ocupadoHasta + 2);
-                        fondo.Opacity = 0.92f;
-                        RenderTarget.FillRoundedRectangle(new SharpDX.Direct2D1.RoundedRectangle
-                        {
-                            Rect = new SharpDX.RectangleF(x, y, w, alto),
-                            RadiusX = 4,
-                            RadiusY = 4
-                        }, fondo);
-                        RenderTarget.DrawTextLayout(new SharpDX.Vector2(x + 6, y + 2), layout, blanco);
-                        ocupadoHasta = y + alto;
-                    }
-                }
+        // escribe el texto junto a la línea y, debajo o encima de ella, a la derecha o a la izquierda de la caja
+        void Rotular(SharpDX.DirectWrite.TextFormat formato, string texto, Brush color, Geometria g, float yLinea, bool debajo, bool aLaDerecha, float alto)
+        {
+            using (var layout = new SharpDX.DirectWrite.TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory, texto, formato, 1000, 100))
+            using (SharpDX.Direct2D1.Brush pincel = color.ToDxBrush(RenderTarget))
+            {
+                float x = aLaDerecha ? g.Der - layout.Metrics.Width - 6 : g.Izq + 6;
+                float y = debajo ? yLinea + 2 : yLinea - alto - 2;
+                RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, pincel);
             }
         }
 
@@ -374,24 +389,27 @@ namespace NinjaTrader.NinjaScript.DrawingTools
         [Display(Name = "Hasta qué R (1 a 5)", Order = 1, GroupName = "Riesgo R")]
         public int NivelesR { get; set; }
 
+        [Display(Name = "Usar los contratos de la posición abierta", Order = 2, GroupName = "Riesgo R")]
+        public bool UsarPosicion { get; set; }
+
         [Range(1, 1000)]
-        [Display(Name = "Contratos", Order = 2, GroupName = "Riesgo R")]
+        [Display(Name = "Contratos (si no hay posición abierta)", Order = 3, GroupName = "Riesgo R")]
         public int Contratos { get; set; }
 
-        [Display(Name = "Mostrar el precio", Order = 3, GroupName = "Riesgo R")]
+        [Display(Name = "Mostrar el precio", Order = 4, GroupName = "Riesgo R")]
         public bool MostrarPrecio { get; set; }
 
-        [Display(Name = "Mostrar los puntos", Order = 4, GroupName = "Riesgo R")]
+        [Display(Name = "Mostrar los puntos", Order = 5, GroupName = "Riesgo R")]
         public bool MostrarPuntos { get; set; }
 
-        [Display(Name = "Mostrar el dinero", Order = 5, GroupName = "Riesgo R")]
+        [Display(Name = "Mostrar el dinero", Order = 6, GroupName = "Riesgo R")]
         public bool MostrarDinero { get; set; }
 
         [Range(0, 100)]
-        [Display(Name = "Opacidad de las zonas (%)", Order = 6, GroupName = "Riesgo R")]
+        [Display(Name = "Opacidad de las zonas (%)", Order = 7, GroupName = "Riesgo R")]
         public int OpacidadZona { get; set; }
 
-        [Display(Name = "Letra", Order = 7, GroupName = "Riesgo R")]
+        [Display(Name = "Letra", Order = 8, GroupName = "Riesgo R")]
         public SimpleFont Fuente { get; set; }
 
         [XmlIgnore]
