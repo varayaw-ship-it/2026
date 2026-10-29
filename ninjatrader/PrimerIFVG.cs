@@ -1,5 +1,5 @@
 ﻿// ══════════════════════════════════════════════════════════════════════════════
-//  PRIMER IFVG · NinjaTrader 8 · v0.5 (2026-10-28)
+//  PRIMER IFVG · NinjaTrader 8 · v0.6 (2026-10-29)
 //  Versión para NinjaTrader del indicador "Primer IFVG" de TradingView (núcleo):
 //  IFVG de 1–5m con vista previa punteada, CISD, FVG de 15m/1h/4h con su CE,
 //  niveles de liquidez y niveles GEX de QQQ descargados solos de CBOE.
@@ -67,6 +67,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         volatile bool gexDescargando;
         DateTime proximaDescargaUtc = DateTime.MinValue;
         double gexRazon = double.NaN;
+        readonly RelojQqq relojQqq = new RelojQqq();
         DateTime gexHora;
         GexResultado gexResAplicado;
         double precioPrevio = double.NaN;
@@ -323,24 +324,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             });
         }
 
-        // Razón NQ/QQQ: con el precio de NQ de hace 15 minutos en horario regular (CBOE trae QQQ con ese retraso);
-        // fuera de horario, con el NQ de las 16:00 NY de la última sesión.
+        // Razón NQ/QQQ: precio de NQ a la misma hora que el precio de QQQ que trae CBOE (ver RelojQqq).
         void AplicarGex()
         {
             GexResultado res;
             lock (gexLock) res = gexRes;
             if (res == null || ReferenceEquals(res, gexResAplicado)) return;
             gexResAplicado = res;
+            DateTime refNy = relojQqq.Referencia(res.Spot, res.Calculado);
             if (GexRazonManual > 0) { gexRazon = GexRazonManual; gexHora = res.Calculado; return; }
-            DateTime refNy = res.Calculado.AddMinutes(-15);
-            int m = refNy.Hour * 60 + refNy.Minute;
-            bool habil = refNy.DayOfWeek != DayOfWeek.Saturday && refNy.DayOfWeek != DayOfWeek.Sunday;
-            if (!(habil && m >= 570 && m <= 960))
-            {
-                DateTime d = m < 570 ? refNy.Date.AddDays(-1) : refNy.Date;
-                while (d.DayOfWeek == DayOfWeek.Saturday || d.DayOfWeek == DayOfWeek.Sunday) d = d.AddDays(-1);
-                refNy = d.AddHours(16);
-            }
             int idx = BarsArray[1].GetBar(ALocal(refNy));
             double nq = idx >= 0 ? BarsArray[1].GetClose(idx) : Closes[1][0];
             gexRazon = nq / res.Spot;
@@ -1526,6 +1518,49 @@ namespace PrimerIFVGNucleo
 
     // Niveles GEX con la cadena de opciones de CBOE (cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json).
     // Misma lógica que gex/gex_nasdaq.py: GEX = gamma × OI × 100 × spot² × 1 %, calls +, puts −.
+    // Hora (NY) a la que corresponde el precio de QQQ que trae CBOE (unos 15 minutos de retraso), para compararlo con NQ
+    // a la misma hora. QQQ también cotiza en pre-market y after-hours, así que no sirve usar NQ de las 16:00.
+    // · Si el precio cambió desde la descarga anterior, QQQ está cotizando: 15 minutos antes de la descarga.
+    // · Si no cambió, QQQ dejó de cotizar: la misma hora que en la descarga anterior.
+    // · En la primera descarga se supone que cotiza de 07:00 a 20:00 NY los días hábiles; fuera de eso, el cierre del
+    //   after-hours (20:00) del último día hábil.
+    // NQ no cotiza entre 17:00 y 18:00 NY: en ese rato se usa su último precio, el de las 17:00.
+    public class RelojQqq
+    {
+        double precioAnterior = double.NaN;
+        DateTime horaAnterior;
+
+        public DateTime Referencia(double precio, DateTime calculadoNy)
+        {
+            DateTime r;
+            if (!double.IsNaN(precioAnterior) && precio == precioAnterior) r = horaAnterior;
+            else
+            {
+                r = calculadoNy.AddMinutes(-15);
+                if (double.IsNaN(precioAnterior) && !Cotiza(r)) r = UltimoCierre(r);
+                int m = r.Hour * 60 + r.Minute;
+                if (m >= 17 * 60 && m < 18 * 60) r = r.Date.AddHours(17);
+            }
+            precioAnterior = precio;
+            horaAnterior = r;
+            return r;
+        }
+
+        static bool Cotiza(DateTime t)
+        {
+            int m = t.Hour * 60 + t.Minute;
+            return t.DayOfWeek != DayOfWeek.Saturday && t.DayOfWeek != DayOfWeek.Sunday && m >= 7 * 60 && m < 20 * 60;
+        }
+
+        // cierre del after-hours (20:00 NY) del último día hábil hasta t
+        static DateTime UltimoCierre(DateTime t)
+        {
+            DateTime d = t.Hour * 60 + t.Minute < 20 * 60 ? t.Date.AddDays(-1) : t.Date;
+            while (d.DayOfWeek == DayOfWeek.Saturday || d.DayOfWeek == DayOfWeek.Sunday) d = d.AddDays(-1);
+            return d.AddHours(20);
+        }
+    }
+
     public static class GexCalc
     {
         static readonly Regex Occ = new Regex(@"^([A-Z_]+?)(\d{6})([CP])(\d{8})$");

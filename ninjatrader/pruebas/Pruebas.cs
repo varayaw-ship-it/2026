@@ -59,6 +59,7 @@ static class Pruebas
         Correr("GEX igual que la calculadora en Python (sin gamma, IV en %)", () => GexCadena("cadena_qqq_sin_gamma.json"));
         Correr("GEX: strikes extra iguales a Python", GexExtra);
         Correr("GEX: JSON sin precio del subyacente", GexSinPrecio);
+        Correr("GEX: la razón NQ/QQQ usa NQ a la misma hora que el precio de QQQ (after-hours y noche)", RelojQqqPrueba);
 
         Console.WriteLine();
         Console.WriteLine(fallas == 0 ? "OK: " + total + " comprobaciones" : "FALLARON " + fallas + " de " + total + " comprobaciones");
@@ -424,6 +425,27 @@ static class Pruebas
         Igual(747.7427516747593, r.Flip, 1e-7, "gamma flip");
         Igual(39215571.35004617, r.Total, 1e-3, "GEX total");
         Afirmar(r.Extra.SequenceEqual(new[] { 720.0, 770.0, 780.0 }), "extra 720, 770, 780: " + string.Join(", ", r.Extra));
+    }
+
+    static void RelojQqqPrueba()
+    {
+        // miércoles 28/10/2026
+        Func<string, int, DateTime> T = (hm, dias) => new DateTime(2026, 10, 28).AddDays(dias)
+            .AddHours(int.Parse(hm.Substring(0, 2))).AddMinutes(int.Parse(hm.Substring(3, 2)));
+        Afirmar(new RelojQqq().Referencia(711.3, T("10:00", 0)) == T("09:45", 0), "primera descarga en horario regular: 15 min antes");
+        Afirmar(new RelojQqq().Referencia(711.3, T("21:00", 0)) == T("20:00", 0), "primera descarga de noche: cierre del after-hours");
+        Afirmar(new RelojQqq().Referencia(711.3, T("05:00", 1)) == T("20:00", 0), "primera descarga de madrugada: cierre del día anterior");
+        Afirmar(new RelojQqq().Referencia(711.3, T("12:00", 3)) == T("20:00", 2), "sábado: cierre del viernes");
+        Afirmar(new RelojQqq().Referencia(711.3, T("06:00", 5)) == T("20:00", 2), "lunes de madrugada: cierre del viernes");
+
+        var r = new RelojQqq();
+        Afirmar(r.Referencia(711.31, T("19:32", 0)) == T("19:17", 0), "after-hours: 15 min antes, no las 16:00");
+        Afirmar(r.Referencia(710.34, T("19:51", 0)) == T("19:36", 0), "el precio cambió: sigue cotizando");
+        Afirmar(r.Referencia(710.20, T("20:10", 0)) == T("19:55", 0), "último cambio del after-hours");
+        Afirmar(r.Referencia(710.20, T("20:25", 0)) == T("19:55", 0), "precio quieto: se mantiene la hora");
+        Afirmar(r.Referencia(710.20, T("07:20", 1)) == T("19:55", 0), "de madrugada sin cambios: sigue la hora del cierre");
+        Afirmar(r.Referencia(709.90, T("07:35", 1)) == T("07:20", 1), "vuelve a cotizar en el pre-market");
+        Afirmar(r.Referencia(709.80, T("17:20", 1)) == T("17:00", 1), "entre 17:00 y 18:00 NQ no cotiza: su precio de las 17:00");
     }
 
     static void GexSinPrecio()

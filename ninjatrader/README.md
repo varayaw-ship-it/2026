@@ -49,12 +49,17 @@ Sin conexión a datos no se dibuja nada. El indicador dibuja cuando el gráfico 
 
 - Fuente: `https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json`. Son datos gratuitos con unos 15 minutos de retraso.
 - Fórmula: la misma de `gex/gex_nasdaq.py`. Las pruebas comprueban que dan exactamente el mismo resultado.
-- **Razón NQ/QQQ.** En horario regular se usa el precio de NQ de hace 15 minutos, para empatar el retraso de CBOE. Fuera de horario se usa el NQ de las 16:00 NY de la última sesión. La razón aparece arriba a la derecha junto con el régimen: sobre el flip, gamma positiva; bajo el flip, gamma negativa.
+- **Razón NQ/QQQ.** Se compara el precio de QQQ que trae CBOE con el de NQ a la misma hora. QQQ también cotiza en pre-market y after-hours, así que:
+  - si su precio cambió desde la descarga anterior, se usa NQ de 15 minutos antes de la descarga (el retraso de CBOE);
+  - si no cambió, QQQ dejó de cotizar y se mantiene la hora anterior;
+  - en la primera descarga se supone que QQQ cotiza de 07:00 a 20:00 NY los días hábiles; fuera de eso, se usa NQ del cierre del after-hours (20:00).
+
+  La razón y la hora del NQ usado aparecen arriba a la derecha, junto con el régimen: sobre el flip, gamma positiva; bajo el flip, gamma negativa.
 - Si la descarga falla, el error aparece arriba a la derecha y se reintenta a los 2 minutos.
 
 ## Limitaciones de esta versión
 
-- Compila y corre en NinjaTrader 8 desde la v0.2. La lógica tiene 94 comprobaciones, y cada cambio se compila primero contra una imitación de la API de NinjaTrader, pero algunos detalles de dibujo solo se pueden ver en el gráfico real.
+- Compila y corre en NinjaTrader 8 desde la v0.2. La lógica tiene 106 comprobaciones, y cada cambio se compila primero contra una imitación de la API de NinjaTrader, pero algunos detalles de dibujo solo se pueden ver en el gráfico real.
 - El formato del JSON de CBOE no está documentado y no se ha probado con una descarga real.
 - Un IFVG de 1m en un gráfico de 5m puede verse muy angosto: su caja cabe dentro de una sola vela del gráfico.
 
